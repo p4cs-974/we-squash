@@ -1,0 +1,94 @@
+[gd_scene format=3 uid="uid://8rsd16fpsvqu"]
+
+[ext_resource type="Script" uid="uid://c0rxofa7kkang" path="res://scripts/main.gd" id="1"]
+[ext_resource type="Script" uid="uid://bqv38taa6t1y7" path="res://scripts/websocket_server.gd" id="2"]
+[ext_resource type="Script" uid="uid://djd5tek5mh2mo" path="res://scripts/connection_ui.gd" id="3"]
+
+[sub_resource type="Environment" id="Environment_1"]
+background_mode = 1
+background_color = Color(0.12, 0.12, 0.15, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.3, 0.3, 0.35, 1)
+ambient_light_energy = 0.5
+tonemap_mode = 2
+glow_enabled = true
+
+[node name="Main" type="Node3D" unique_id=1379541661]
+script = ExtResource("1")
+
+[node name="WebSocketServer" type="Node" parent="." unique_id=241567936]
+script = ExtResource("2")
+
+[node name="ConnectionUI" type="CanvasLayer" parent="." unique_id=1174217899]
+script = ExtResource("3")
+
+[node name="Panel" type="PanelContainer" parent="ConnectionUI" unique_id=261782592]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="VBox" type="VBoxContainer" parent="ConnectionUI/Panel" unique_id=1807647683]
+layout_mode = 2
+alignment = 1
+
+[node name="Spacer" type="Control" parent="ConnectionUI/Panel/VBox" unique_id=638374716]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 2.0
+
+[node name="WaitingLabel" type="Label" parent="ConnectionUI/Panel/VBox" unique_id=2037186592]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 32
+text = "Waiting for connection..."
+horizontal_alignment = 1
+
+[node name="Spacer2" type="Control" parent="ConnectionUI/Panel/VBox" unique_id=1529578559]
+custom_minimum_size = Vector2(0, 20)
+layout_mode = 2
+
+[node name="IPLabel" type="Label" parent="ConnectionUI/Panel/VBox" unique_id=136358708]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 48
+text = "..."
+horizontal_alignment = 1
+
+[node name="Spacer3" type="Control" parent="ConnectionUI/Panel/VBox" unique_id=559158887]
+custom_minimum_size = Vector2(0, 30)
+layout_mode = 2
+
+[node name="StatusLabel" type="Label" parent="ConnectionUI/Panel/VBox" unique_id=1556361316]
+unique_name_in_owner = true
+modulate = Color(0.7, 0.7, 0.7, 1)
+layout_mode = 2
+theme_override_font_sizes/font_size = 18
+text = "Open the companion app and enter the address above"
+horizontal_alignment = 1
+
+[node name="Spacer4" type="Control" parent="ConnectionUI/Panel/VBox" unique_id=1363627263]
+layout_mode = 2
+size_flags_vertical = 3
+size_flags_stretch_ratio = 3.0
+
+[node name="World" type="Node3D" parent="." unique_id=903694613]
+
+[node name="Camera3D" type="Camera3D" parent="World" unique_id=1414350435]
+transform = Transform3D(1, 0, 0, 0, 0.965926, 0.258819, 0, -0.258819, 0.965926, 0, 0.25, 1.2)
+fov = 45.0
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="World" unique_id=456134707]
+transform = Transform3D(0.866025, -0.25, 0.433013, 0, 0.866025, 0.5, -0.5, -0.433013, 0.75, 2, 3, 1)
+light_energy = 1.2
+shadow_enabled = true
+
+[node name="FillLight" type="DirectionalLight3D" parent="World" unique_id=1422089428]
+transform = Transform3D(0.866025, 0.25, -0.433013, 0, 0.866025, 0.5, 0.5, -0.433013, 0.75, -2, 2, -1)
+light_color = Color(0.8, 0.85, 1, 1)
+light_energy = 0.4
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="World" unique_id=1469313245]
+environment = SubResource("Environment_1")
