@@ -127,7 +127,7 @@ func _check_timeouts() -> void:
 	
 	for peer_id in _peers.keys():
 		var peer_data = _peers[peer_id]
-		var inactive_time := current_time - peer_data.last_activity
+		var inactive_time: int = current_time - peer_data.last_activity
 		
 		if inactive_time > CONNECTION_TIMEOUT_MS:
 			print("[WS Server] Peer %d timed out (inactive for %dms)" % [peer_id, inactive_time])
@@ -232,8 +232,8 @@ func poll() -> void:
 					else:
 						message_received.emit(peer_id, text)
 				# Silently ignore binary packets but count them
-			else:
-				peer_data.last_activity = Time.get_ticks_msec()
+				else:
+					peer_data.last_activity = Time.get_ticks_msec()
 		elif state == WebSocketPeer.STATE_CLOSED:
 			to_remove_peers.append(peer_id)
 			print("[WS Server] Peer %d disconnected (socket closed)" % peer_id)
