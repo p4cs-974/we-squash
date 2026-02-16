@@ -8,9 +8,6 @@ signal swing_detected(power: float)
 @export var calibration_duration: float = 3.0
 @export var swing_threshold_dps: float = 400.0
 
-# Device identification
-var device_type := "phone"  # "phone" or "watch"
-
 # --- Quaternion-based state ---
 var _target_quat := Quaternion.IDENTITY
 var _has_data := false
@@ -26,18 +23,6 @@ var _calibration_timer := 0.0
 var _calibration_samples: Array[Quaternion] = []
 var _calibration_quat := Quaternion.IDENTITY
 var _is_calibrated := false
-
-
-## Convert a CoreMotion quaternion (Z-up) to Godot (Y-up).
-##
-## CoreMotion reference frame (xArbitraryCorrectedZVertical):
-##   X = arbitrary horizontal, Y = perpendicular horizontal, Z = vertical (up)
-## Godot frame:
-##   X = right, Y = up, Z = toward viewer
-## Mapping: CM(x,y,z) -> Godot(x, z, -y)
-## For quaternion imaginary part: (x,y,z) -> (x, z, -y)
-static func cm_quat_to_godot_quat(qx: float, qy: float, qz: float, qw: float) -> Quaternion:
-	return Quaternion(qx, qz, -qy, qw).normalized()
 
 
 ## Build a Godot quaternion from W3C DeviceOrientation Euler angles.
@@ -74,33 +59,20 @@ func start_calibration() -> void:
 	_target_quat = Quaternion.IDENTITY
 	quaternion = Quaternion.IDENTITY
 	calibration_started.emit()
-	var hold_msg := "hold device steady" if device_type == "watch" else "hold phone upright"
-	print("[Controller] Calibration started -- %s for %.0fs" % [hold_msg, calibration_duration])
+	print("[Controller] Calibration started -- hold phone upright for %.0fs" % calibration_duration)
 
 
 func apply_sensor_data(data: Dictionary) -> void:
-	if not data.has("ra") and not data.has("qx"):
+	if not data.has("ra"):
 		return
 
-	# Build orientation quaternion based on device type
-	var current_quat: Quaternion
-	var dev: String = data.get("device", "phone")
+	# Build orientation quaternion from W3C DeviceOrientation Euler angles (radians)
+	var alpha: float = float(data.get("ra", 0.0))  # yaw   (around Z)
+	var beta: float  = float(data.get("rb", 0.0))  # pitch (around X)
+	var gamma: float = float(data.get("rg", 0.0))  # roll  (around Y)
+	var current_quat := w3c_to_godot_quat(alpha, beta, gamma)
 
-	if dev == "watch" and data.has("qx"):
-		# Apple Watch sends CMAttitude quaternion directly
-		var qx: float = float(data.get("qx", 0.0))
-		var qy: float = float(data.get("qy", 0.0))
-		var qz: float = float(data.get("qz", 0.0))
-		var qw: float = float(data.get("qw", 1.0))
-		current_quat = cm_quat_to_godot_quat(qx, qy, qz, qw)
-	else:
-		# Phone sends W3C DeviceOrientation Euler angles (radians)
-		var alpha: float = float(data.get("ra", 0.0))  # yaw   (around Z)
-		var beta: float  = float(data.get("rb", 0.0))  # pitch (around X)
-		var gamma: float = float(data.get("rg", 0.0))  # roll  (around Y)
-		current_quat = w3c_to_godot_quat(alpha, beta, gamma)
-
-	# Gyroscope rotation rate (deg/s) -- same field layout for both devices
+	# Gyroscope rotation rate (deg/s)
 	var ga: float = float(data.get("ga", 0.0))
 	var gb: float = float(data.get("gb", 0.0))
 	var gg: float = float(data.get("gg", 0.0))
