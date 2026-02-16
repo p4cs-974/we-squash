@@ -1,4 +1,4 @@
-class_name UDPServer
+class_name GameUDPServer
 extends Node
 
 ## Emitted when a UDP client is first seen. Provides the peer ID.

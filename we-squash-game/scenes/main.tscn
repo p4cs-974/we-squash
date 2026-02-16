@@ -3,8 +3,8 @@
 [ext_resource type="Script" uid="uid://c0rxofa7kkang" path="res://scripts/main.gd" id="1"]
 [ext_resource type="Script" uid="uid://bqv38taa6t1y7" path="res://scripts/websocket_server.gd" id="2"]
 [ext_resource type="Script" uid="uid://djd5tek5mh2mo" path="res://scripts/connection_ui.gd" id="3"]
-[ext_resource type="Script" uid="uid://cu6qr8v0jbkqp" path="res://scripts/udp_server.gd" id="4"]
-[ext_resource type="Script" uid="uid://ddbq1tccv2u3b" path="res://scripts/discovery_beacon.gd" id="5"]
+[ext_resource type="Script" uid="uid://dttyoo0v67rlo" path="res://scripts/udp_server.gd" id="4"]
+[ext_resource type="Script" uid="uid://bfnylcnffatbf" path="res://scripts/discovery_beacon.gd" id="5"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1
@@ -65,6 +65,14 @@ theme_override_font_sizes/font_size = 48
 text = "..."
 horizontal_alignment = 1
 
+[node name="QRTextureRect" type="TextureRect" parent="ConnectionUI/Panel/VBox" unique_id=123456789]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(200, 200)
+layout_mode = 2
+size_flags_horizontal = 4
+expand_mode = 1
+stretch_mode = 5
+
 [node name="Spacer3" type="Control" parent="ConnectionUI/Panel/VBox" unique_id=559158887]
 custom_minimum_size = Vector2(0, 30)
 layout_mode = 2
@@ -74,7 +82,7 @@ unique_name_in_owner = true
 modulate = Color(0.7, 0.7, 0.7, 1)
 layout_mode = 2
 theme_override_font_sizes/font_size = 18
-text = "Open the companion app and enter the address above"
+text = "Scan QR code with your iPhone or enter the IP above"
 horizontal_alignment = 1
 
 [node name="Spacer4" type="Control" parent="ConnectionUI/Panel/VBox" unique_id=1363627263]

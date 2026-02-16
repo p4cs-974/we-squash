@@ -5,8 +5,8 @@ const IPhoneScene := preload("res://models/iphone_17_pro.glb")
 
 const MODEL_SCALE := 5.0
 
-@onready var ws_server: WebSocketServer = $WebSocketServer
-@onready var udp_server: UDPServer = $UDPServer
+@onready var ws_server: GameWebSocketServer = $WebSocketServer
+@onready var udp_server: GameUDPServer = $UDPServer
 @onready var discovery_beacon: DiscoveryBeacon = $DiscoveryBeacon
 @onready var connection_ui: CanvasLayer = $ConnectionUI
 @onready var world: Node3D = $World
@@ -46,7 +46,7 @@ func _ready() -> void:
 		# Continue anyway, direct connection still works
 
 	var local_ip := ws_server.get_local_ip()
-	connection_ui.setup(local_ip, WebSocketServer.PORT, UDPServer.PORT)
+	connection_ui.setup(local_ip, GameWebSocketServer.PORT, GameUDPServer.PORT)
 
 
 func _process(_delta: float) -> void:

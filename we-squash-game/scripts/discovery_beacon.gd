@@ -20,7 +20,7 @@ func start_beacon() -> Error:
 		stop_beacon()
 
 	# Create UDP socket
-	var err := _udp.create(0)  # Bind to any available port
+	var err: Error = _udp.bind(0)  # Bind to any available port
 	if err != OK:
 		push_error("[DiscoveryBeacon] Failed to create UDP socket: %d" % err)
 		return err

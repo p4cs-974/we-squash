@@ -209,7 +209,7 @@ export function useSensorStream({
         az: data.az,
         ts: data.ts,
       });
-      return udpSend(Buffer.from(binaryData));
+      return udpSend(binaryData);
     } else {
       return wsSend(JSON.stringify(data));
     }

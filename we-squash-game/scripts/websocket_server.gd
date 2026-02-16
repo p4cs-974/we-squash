@@ -1,4 +1,4 @@
-class_name WebSocketServer
+class_name GameWebSocketServer
 extends Node
 
 ## Emitted when a client connects. Provides the peer ID.

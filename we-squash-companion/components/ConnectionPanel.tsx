@@ -6,7 +6,6 @@ import {
   View,
   Platform,
   useColorScheme,
-  ActivityIndicator,
 } from 'react-native';
 import Animated, {
   useAnimatedStyle,
@@ -16,6 +15,7 @@ import Animated, {
   FadeInUp,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
+import { Ionicons } from '@expo/vector-icons';
 
 import { ThemedText } from '@/components/themed-text';
 import type { SensorData } from '@/hooks/useSensorStream';
@@ -46,6 +46,7 @@ interface ConnectionPanelProps {
   transportMode: TransportMode;
   onTransportModeChange: (mode: TransportMode) => void;
   discoveredServer: DiscoveredServer | null;
+  onScanQRCode?: () => void;
 }
 
 export function ConnectionPanel({
@@ -63,6 +64,7 @@ export function ConnectionPanel({
   transportMode,
   onTransportModeChange,
   discoveredServer,
+  onScanQRCode,
 }: ConnectionPanelProps) {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
@@ -153,7 +155,13 @@ export function ConnectionPanel({
   const borderColor = isDark ? '#38383A' : '#E5E5EA';
 
   const isUDPDiscovered = transportMode === 'udp' && discoveredServer !== null;
-  const isUDPSearching = transportMode === 'udp' && discoveredServer === null && !isConnected;
+
+  const handleQRPress = useCallback(() => {
+    if (Platform.OS === 'ios') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    onScanQRCode?.();
+  }, [onScanQRCode]);
 
   return (
     <Animated.View entering={FadeInUp.duration(400)} style={styles.container}>
@@ -231,13 +239,18 @@ export function ConnectionPanel({
           </View>
         )}
 
-        {isUDPSearching && (
-          <View style={styles.searchingContainer}>
-            <ActivityIndicator size="small" color="#007AFF" />
-            <ThemedText style={[styles.searchingText, { color: secondaryTextColor }]}>
-              Searching for game server...
+        {!isUDPDiscovered && !isConnected && onScanQRCode && (
+          <TouchableOpacity
+            style={[styles.qrButton, { backgroundColor: secondaryBackground }]}
+            onPress={handleQRPress}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="qr-code-outline" size={24} color="#007AFF" />
+            <ThemedText style={[styles.qrButtonText, { color: textColor }]}>
+              Scan QR Code
             </ThemedText>
-          </View>
+            <Ionicons name="chevron-forward" size={20} color={secondaryTextColor} />
+          </TouchableOpacity>
         )}
 
         {transportMode === 'websocket' && (
@@ -493,6 +506,20 @@ const styles = StyleSheet.create({
   },
   searchingText: {
     fontSize: 14,
+    fontWeight: '500',
+  },
+  qrButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    gap: 12,
+  },
+  qrButtonText: {
+    flex: 1,
+    fontSize: 17,
     fontWeight: '500',
   },
   inputRow: {
