@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { Buffer } from 'buffer';
 import { DeviceMotion, type DeviceMotionMeasurement } from 'expo-sensors';
 import { useWebSocket } from './useWebSocket';
 import { useUDPSocket } from './useUDPSocket';
-import { encodeCalibrationPacket, encodeSensorPacket } from '@/utils/binaryProtocol';
+import {
+  SENSOR_PACKET_SIZE,
+  encodeCalibrationPacket,
+  encodeSensorPacketInto,
+} from '@/utils/binaryProtocol';
 
 interface Vec3 {
   x: number;
@@ -29,6 +34,8 @@ const ZERO_SENSOR: SensorData = { rotation: ZERO_EULER, gyro: ZERO_EULER, accel:
 const DEFAULT_THROTTLE_INTERVAL = 16;
 const SENSOR_UI_UPDATE_INTERVAL_MS = 66;
 const PACKET_COUNTER_UPDATE_INTERVAL_MS = 250;
+const UDP_PACKET_BUFFER_POOL_SIZE = 4;
+const DEBUG_SENSOR_LOGS = false;
 
 type ConnectionState = 'idle' | 'connecting' | 'open' | 'closing' | 'closed' | 'error';
 type TransportMode = 'udp' | 'websocket';
@@ -97,9 +104,27 @@ export function useSensorStream({
   const packetsSentRef = useRef(0);
   const lastSentRef = useRef(0);
   const lastSensorUiUpdateRef = useRef(0);
-  const pendingPayloadRef = useRef<SensorPayload | null>(null);
+  const pendingPayloadRef = useRef<SensorPayload>({
+    type: 'sensor',
+    device: 'phone',
+    ra: 0,
+    rb: 0,
+    rg: 0,
+    ga: 0,
+    gb: 0,
+    gg: 0,
+    ax: 0,
+    ay: 0,
+    az: 0,
+    ts: 0,
+  });
+  const hasPendingPayloadRef = useRef(false);
   const sendTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const packetCounterIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const udpPacketBufferPoolRef = useRef<Buffer[]>(
+    Array.from({ length: UDP_PACKET_BUFFER_POOL_SIZE }, () => Buffer.allocUnsafe(SENSOR_PACKET_SIZE)),
+  );
+  const udpPacketBufferIndexRef = useRef(0);
   const wsUrlRef = useRef(initialWsUrl);
   const serverIpRef = useRef(serverIp);
   const serverPortRef = useRef(serverPort);
@@ -136,7 +161,9 @@ export function useSensorStream({
     async function checkSensor() {
       try {
         const available = await DeviceMotion.isAvailableAsync();
-        console.log('[Sensor] DeviceMotion available:', available);
+        if (DEBUG_SENSOR_LOGS) {
+          console.log('[Sensor] DeviceMotion available:', available);
+        }
         if (mounted) {
           setIsSensorAvailable(available);
         }
@@ -190,11 +217,13 @@ export function useSensorStream({
   }, []);
 
   const connect = useCallback((explicitWsUrl?: string) => {
-    console.log('[Sensor] connect() called, transport=', transportMode);
+    if (DEBUG_SENSOR_LOGS) {
+      console.log('[Sensor] connect() called, transport=', transportMode);
+    }
     packetsSentRef.current = 0;
     lastSentRef.current = 0;
     lastSensorUiUpdateRef.current = 0;
-    pendingPayloadRef.current = null;
+    hasPendingPayloadRef.current = false;
     clearSendTimeout();
     setPacketsSent(0);
 
@@ -204,7 +233,9 @@ export function useSensorStream({
       if (ip && port) {
         udpConnect(ip, port);
       } else {
-        console.log('[Sensor] UDP connect skipped - no server IP/port');
+        if (DEBUG_SENSOR_LOGS) {
+          console.log('[Sensor] UDP connect skipped - no server IP/port');
+        }
       }
     } else {
       const url = explicitWsUrl ?? wsUrlRef.current;
@@ -216,7 +247,7 @@ export function useSensorStream({
 
   const disconnect = useCallback(() => {
     clearSendTimeout();
-    pendingPayloadRef.current = null;
+    hasPendingPayloadRef.current = false;
     if (transportMode === 'udp') {
       udpDisconnect();
     } else {
@@ -226,7 +257,12 @@ export function useSensorStream({
 
   const send = useCallback((data: SensorPayload): boolean => {
     if (transportMode === 'udp') {
-      const binaryData = encodeSensorPacket({
+      const pool = udpPacketBufferPoolRef.current;
+      const index = udpPacketBufferIndexRef.current;
+      const packetBuffer = pool[index];
+      udpPacketBufferIndexRef.current = (index + 1) % pool.length;
+
+      encodeSensorPacketInto(packetBuffer, {
         ra: data.ra,
         rb: data.rb,
         rg: data.rg,
@@ -238,7 +274,7 @@ export function useSensorStream({
         az: data.az,
         ts: data.ts,
       });
-      return udpSend(binaryData);
+      return udpSend(packetBuffer);
     } else {
       return wsSend(JSON.stringify(data));
     }
@@ -265,8 +301,7 @@ export function useSensorStream({
   }, [isConnected, transportMode, udpSend, wsSend]);
 
   const flushPendingPayload = useCallback(() => {
-    const payload = pendingPayloadRef.current;
-    if (!payload) {
+    if (!hasPendingPayloadRef.current) {
       return;
     }
 
@@ -283,16 +318,38 @@ export function useSensorStream({
       return;
     }
 
-    pendingPayloadRef.current = null;
-    const success = send(payload);
+    const success = send(pendingPayloadRef.current);
     if (success) {
+      hasPendingPayloadRef.current = false;
       packetsSentRef.current += 1;
       lastSentRef.current = now;
     }
   }, [send, throttleInterval]);
 
-  const queueLatestPayload = useCallback((payload: SensorPayload) => {
-    pendingPayloadRef.current = payload;
+  const queueLatestPayload = useCallback((
+    ra: number,
+    rb: number,
+    rg: number,
+    ga: number,
+    gb: number,
+    gg: number,
+    ax: number,
+    ay: number,
+    az: number,
+    ts: number,
+  ) => {
+    const payload = pendingPayloadRef.current;
+    payload.ra = ra;
+    payload.rb = rb;
+    payload.rg = rg;
+    payload.ga = ga;
+    payload.gb = gb;
+    payload.gg = gg;
+    payload.ax = ax;
+    payload.ay = ay;
+    payload.az = az;
+    payload.ts = ts;
+    hasPendingPayloadRef.current = true;
     flushPendingPayload();
   }, [flushPendingPayload]);
 
@@ -320,12 +377,16 @@ export function useSensorStream({
     }
 
     clearSendTimeout();
-    pendingPayloadRef.current = null;
+    hasPendingPayloadRef.current = false;
 
-    console.log('[Sensor] Streaming effect: isConnected=%s isSensorAvailable=%s transport=%s', isConnected, isSensorAvailable, transportMode);
+    if (DEBUG_SENSOR_LOGS) {
+      console.log('[Sensor] Streaming effect: isConnected=%s isSensorAvailable=%s transport=%s', isConnected, isSensorAvailable, transportMode);
+    }
     
     if (isConnected && isSensorAvailable) {
-      console.log('[Sensor] Starting DeviceMotion listener');
+      if (DEBUG_SENSOR_LOGS) {
+        console.log('[Sensor] Starting DeviceMotion listener');
+      }
       subscriptionRef.current = DeviceMotion.addListener((measurement: DeviceMotionMeasurement) => {
         const rot = measurement.rotation;
         const gyro = measurement.rotationRate;
@@ -351,22 +412,18 @@ export function useSensorStream({
           lastSensorUiUpdateRef.current = now;
         }
 
-        const payload: SensorPayload = {
-          type: 'sensor',
-          device: 'phone',
-          ra: rotation.alpha,
-          rb: rotation.beta,
-          rg: rotation.gamma,
-          ga: gyroData.alpha,
-          gb: gyroData.beta,
-          gg: gyroData.gamma,
-          ax: accelData.x,
-          ay: accelData.y,
-          az: accelData.z,
-          ts: now,
-        };
-
-        queueLatestPayload(payload);
+        queueLatestPayload(
+          rotation.alpha,
+          rotation.beta,
+          rotation.gamma,
+          gyroData.alpha,
+          gyroData.beta,
+          gyroData.gamma,
+          accelData.x,
+          accelData.y,
+          accelData.z,
+          now,
+        );
       });
     }
 
@@ -376,7 +433,7 @@ export function useSensorStream({
         subscriptionRef.current = null;
       }
       clearSendTimeout();
-      pendingPayloadRef.current = null;
+      hasPendingPayloadRef.current = false;
     };
   }, [clearSendTimeout, isConnected, isSensorAvailable, queueLatestPayload, transportMode]);
 
@@ -384,7 +441,7 @@ export function useSensorStream({
     return () => {
       clearSendTimeout();
       clearPacketCounterInterval();
-      pendingPayloadRef.current = null;
+      hasPendingPayloadRef.current = false;
     };
   }, [clearPacketCounterInterval, clearSendTimeout]);
 

@@ -8,6 +8,13 @@ type ConnectionState = 'idle' | 'connecting' | 'open' | 'closed' | 'error';
 const TAG = '[UDP]';
 const HEARTBEAT_INTERVAL = 5000;
 const HEARTBEAT_TIMEOUT = 15000;
+const DEBUG_UDP_LOGS = false;
+
+function debugLog(...args: unknown[]) {
+  if (DEBUG_UDP_LOGS) {
+    console.log(...args);
+  }
+}
 
 interface UseUDPSocketReturn {
   isConnected: boolean;
@@ -54,7 +61,7 @@ export function useUDPSocket({
       try {
         socketRef.current.close();
       } catch (error) {
-        console.log(TAG, 'Error closing socket:', error);
+        debugLog(TAG, 'Error closing socket:', error);
       }
       socketRef.current = null;
     }
@@ -74,7 +81,7 @@ export function useUDPSocket({
         clearTimeout(heartbeatTimeoutRef.current);
       }
       heartbeatTimeoutRef.current = setTimeout(() => {
-        console.log(TAG, 'Heartbeat timeout - no response from server');
+        debugLog(TAG, 'Heartbeat timeout - no response from server');
         setConnectionState('closed');
         clearHeartbeatTimers();
       }, HEARTBEAT_TIMEOUT);
@@ -106,7 +113,7 @@ export function useUDPSocket({
     }, HEARTBEAT_INTERVAL);
 
     heartbeatTimeoutRef.current = setTimeout(() => {
-      console.log(TAG, 'Heartbeat timeout - no response from server');
+      debugLog(TAG, 'Heartbeat timeout - no response from server');
       setConnectionState('closed');
       clearHeartbeatTimers();
     }, HEARTBEAT_TIMEOUT);
@@ -114,16 +121,16 @@ export function useUDPSocket({
 
   const performConnect = useCallback((ip: string, port: number) => {
     if (isConnectingRef.current) {
-      console.log(TAG, 'performConnect SKIPPED - already connecting');
+      debugLog(TAG, 'performConnect SKIPPED - already connecting');
       return;
     }
 
     if (socketRef.current) {
-      console.log(TAG, 'performConnect SKIPPED - socket already exists');
+      debugLog(TAG, 'performConnect SKIPPED - socket already exists');
       return;
     }
 
-    console.log(TAG, `performConnect -> ${ip}:${port}`);
+    debugLog(TAG, `performConnect -> ${ip}:${port}`);
     isConnectingRef.current = true;
     manualDisconnectRef.current = false;
     setConnectionState('connecting');
@@ -148,7 +155,7 @@ export function useUDPSocket({
       });
 
       socket.on('close', () => {
-        console.log(TAG, 'Socket closed');
+        debugLog(TAG, 'Socket closed');
         clearHeartbeatTimers();
         isConnectingRef.current = false;
         
@@ -166,7 +173,7 @@ export function useUDPSocket({
           return;
         }
 
-        console.log(TAG, 'Socket bound successfully');
+        debugLog(TAG, 'Socket bound successfully');
         isConnectingRef.current = false;
 
         if (enableHeartbeat) {
@@ -185,18 +192,18 @@ export function useUDPSocket({
 
   const connect = useCallback((ip: string, port: number) => {
     if (!ip || !port) {
-      console.log(TAG, 'connect() called with invalid ip/port');
+      debugLog(TAG, 'connect() called with invalid ip/port');
       return;
     }
 
-    console.log(TAG, `connect() -> ${ip}:${port}`);
+    debugLog(TAG, `connect() -> ${ip}:${port}`);
     clearHeartbeatTimers();
     cleanupSocket();
     performConnect(ip, port);
   }, [performConnect, clearHeartbeatTimers, cleanupSocket]);
 
   const disconnect = useCallback(() => {
-    console.log(TAG, 'disconnect() called');
+    debugLog(TAG, 'disconnect() called');
     manualDisconnectRef.current = true;
     clearHeartbeatTimers();
     cleanupSocket();

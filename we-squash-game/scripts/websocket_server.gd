@@ -13,6 +13,7 @@ const MAX_CONNECTIONS := 10
 const HANDSHAKE_TIMEOUT_MS := 5000
 const PING_INTERVAL_MS := 30000
 const CONNECTION_TIMEOUT_MS := 60000
+const TIMEOUT_CHECK_INTERVAL_MS := 1000
 
 var _tcp_server := TCPServer.new()
 var _peers: Dictionary = {} # peer_id -> {socket, last_activity, state}
@@ -20,6 +21,7 @@ var _pending: Array = [] # Array of PendingPeer
 var _next_peer_id := 1
 var _is_listening := false
 var _last_ping_time := 0
+var _last_timeout_check_time := 0
 
 class PendingPeer:
 	var tcp: StreamPeerTCP
@@ -37,6 +39,7 @@ func start_server() -> Error:
 	if err == OK:
 		_is_listening = true
 		_last_ping_time = Time.get_ticks_msec()
+		_last_timeout_check_time = _last_ping_time
 		print("[WS Server] Listening on port %d (max connections: %d)" % [PORT, MAX_CONNECTIONS])
 	else:
 		push_error("[WS Server] Failed to listen on port %d, error: %s" % [PORT, err])
@@ -111,12 +114,12 @@ func _send_pings() -> void:
 		return
 	
 	_last_ping_time = current_time
+	var ping_message := JSON.stringify({
+		"type": "ping",
+		"timestamp": current_time
+	})
 	
 	for peer_id in _peers.keys():
-		var ping_message := JSON.stringify({
-			"type": "ping",
-			"timestamp": current_time
-		})
 		send_to(peer_id, ping_message)
 
 
@@ -218,10 +221,10 @@ func poll() -> void:
 		var state := peer.get_ready_state()
 		if state == WebSocketPeer.STATE_OPEN:
 			peer_data.state = WebSocketPeer.STATE_OPEN
-			peer_data.last_activity = Time.get_ticks_msec()
 			
 			while peer.get_available_packet_count() > 0:
 				var packet := peer.get_packet()
+				peer_data.last_activity = Time.get_ticks_msec()
 				if peer.was_string_packet():
 					var text := packet.get_string_from_utf8()
 					# Handle pong messages
@@ -244,7 +247,10 @@ func poll() -> void:
 	
 	# Send pings and check timeouts
 	_send_pings()
-	_check_timeouts()
+	var now := Time.get_ticks_msec()
+	if now - _last_timeout_check_time >= TIMEOUT_CHECK_INTERVAL_MS:
+		_last_timeout_check_time = now
+		_check_timeouts()
 
 
 func get_local_ip() -> String:

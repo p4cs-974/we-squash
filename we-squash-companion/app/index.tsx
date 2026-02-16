@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback } from 'react';
 import { StyleSheet, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -7,7 +7,6 @@ import { QRScanner } from '@/components/QRScanner';
 import { useSensorStream } from '@/hooks/useSensorStream';
 import { useDiscovery } from '@/hooks/useDiscovery';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { Colors } from '@/constants/theme';
 
 export type TransportMode = 'udp' | 'websocket';
 
@@ -21,19 +20,9 @@ export default function Index() {
 
   const { discoveredServer, handleDeepLink } = useDiscovery();
 
-  const serverIp = useMemo(() => {
-    if (transportMode === 'udp' && discoveredServer) {
-      return discoveredServer.ip;
-    }
-    return ipAddress;
-  }, [transportMode, discoveredServer, ipAddress]);
-
-  const serverPort = useMemo(() => {
-    if (transportMode === 'udp' && discoveredServer) {
-      return discoveredServer.port;
-    }
-    return parseInt(port, 10) || 9080;
-  }, [transportMode, discoveredServer, port]);
+  const serverIp = transportMode === 'udp' && discoveredServer ? discoveredServer.ip : ipAddress;
+  const serverPort =
+    transportMode === 'udp' && discoveredServer ? discoveredServer.port : parseInt(port, 10) || 9080;
 
   const {
     sensorData,
@@ -83,7 +72,7 @@ export default function Index() {
     return requestCalibration();
   }, [requestCalibration]);
 
-  const backgroundColor = Colors[colorScheme ?? 'light'].background;
+  const backgroundColor = colorScheme === 'dark' ? '#070B10' : '#F3F7FB';
 
   return (
     <>

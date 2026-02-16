@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { StyleSheet, TouchableOpacity, View, Modal } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -16,9 +16,9 @@ export function QRScanner({ isVisible, onClose, onScan }: QRScannerProps) {
 
   useEffect(() => {
     if (isVisible && !permission?.granted) {
-      requestPermission();
+      void requestPermission();
     }
-  }, [isVisible, permission]);
+  }, [isVisible, permission?.granted, requestPermission]);
 
   useEffect(() => {
     if (!isVisible) {

@@ -13,7 +13,7 @@ signal command_received(peer_id: int, command: Dictionary)
 const PORT := 9081
 const MAX_CONNECTIONS := 10
 const PEER_TIMEOUT_MS := 15000  # Consider peer dead after 15s of no packets
-const HEARTBEAT_INTERVAL_MS := 5000  # Phone sends heartbeat every 5s
+const TIMEOUT_CHECK_INTERVAL_MS := 1000
 
 # Packet types (must match React Native encoder)
 const PACKET_TYPE_SENSOR := 0x01
@@ -30,12 +30,14 @@ var _peers: Dictionary = {}  # peer_id -> {address, port, last_activity}
 var _address_to_peer_id: Dictionary = {}  # "ip:port" -> peer_id
 var _next_peer_id := 1000  # Start at 1000 to avoid collision with WebSocket peer IDs
 var _is_listening := false
+var _last_timeout_check_time := 0
 
 
 func start_server() -> Error:
 	var err := _udp_server.listen(PORT)
 	if err == OK:
 		_is_listening = true
+		_last_timeout_check_time = Time.get_ticks_msec()
 		print("[UDP Server] Listening on port %d (max connections: %d)" % [PORT, MAX_CONNECTIONS])
 	else:
 		push_error("[UDP Server] Failed to listen on port %d, error: %s" % [PORT, err])
@@ -75,8 +77,11 @@ func poll() -> void:
 
 	_udp_server.poll()
 
-	# Check for timeouts
-	_check_timeouts()
+	# Timeout scanning does not need to run every frame.
+	var now := Time.get_ticks_msec()
+	if now - _last_timeout_check_time >= TIMEOUT_CHECK_INTERVAL_MS:
+		_last_timeout_check_time = now
+		_check_timeouts()
 
 	# Process incoming packets.
 	# Keep only the newest sensor packet per peer to avoid backlog-induced latency.

@@ -49,7 +49,19 @@ export interface SensorPacketData {
  * - Offset 38-45: f64 timestamp (Unix ms)
  */
 export function encodeSensorPacket(data: SensorPacketData): Buffer {
-  const buf = Buffer.alloc(SENSOR_PACKET_SIZE);
+  const buf = Buffer.allocUnsafe(SENSOR_PACKET_SIZE);
+  encodeSensorPacketInto(buf, data);
+  return buf;
+}
+
+/**
+ * Encode sensor data into an existing 46-byte buffer.
+ * This avoids per-packet allocations in the high-frequency sensor send path.
+ */
+export function encodeSensorPacketInto(buf: Buffer, data: SensorPacketData): void {
+  if (buf.length < SENSOR_PACKET_SIZE) {
+    throw new Error(`Sensor packet buffer too small: got ${buf.length}, expected ${SENSOR_PACKET_SIZE}`);
+  }
   buf.writeUInt8(PACKET_TYPE.SENSOR, 0);
   buf.writeUInt8(DEVICE_TYPE.PHONE, 1);
   buf.writeFloatLE(data.ra, 2);
@@ -62,7 +74,6 @@ export function encodeSensorPacket(data: SensorPacketData): Buffer {
   buf.writeFloatLE(data.ay, 30);
   buf.writeFloatLE(data.az, 34);
   buf.writeDoubleLE(data.ts, 38);
-  return buf;
 }
 
 /**

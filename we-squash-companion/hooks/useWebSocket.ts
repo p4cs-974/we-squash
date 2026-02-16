@@ -26,6 +26,13 @@ interface UseWebSocketOptions {
 const TAG = '[WS]';
 const DEFAULT_PING_INTERVAL = 30000; // 30 seconds
 const DEFAULT_CONNECTION_TIMEOUT = 10000; // 10 seconds
+const DEBUG_WS_LOGS = false;
+
+function debugLog(...args: unknown[]) {
+  if (DEBUG_WS_LOGS) {
+    console.log(...args);
+  }
+}
 
 export function useWebSocket({
   url: initialUrl = '',
@@ -125,12 +132,12 @@ export function useWebSocket({
 
   const performConnect = useCallback((targetUrl: string) => {
     if (isConnectingRef.current) {
-      console.log(TAG, 'performConnect SKIPPED — already connecting');
+      debugLog(TAG, 'performConnect SKIPPED — already connecting');
       return;
     }
 
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      console.log(TAG, 'performConnect SKIPPED — already open');
+      debugLog(TAG, 'performConnect SKIPPED — already open');
       return;
     }
 
@@ -141,14 +148,14 @@ export function useWebSocket({
       return;
     }
 
-    console.log(TAG, `performConnect → ${targetUrl}`);
+    debugLog(TAG, `performConnect → ${targetUrl}`);
     isConnectingRef.current = true;
     manualDisconnectRef.current = false;
     setConnectionState('connecting');
 
     // Set connection timeout
     connectionTimeoutRef.current = setTimeout(() => {
-      console.log(TAG, 'Connection timeout');
+      debugLog(TAG, 'Connection timeout');
       if (wsRef.current) {
         wsRef.current.close(1000, 'Connection timeout');
       }
@@ -157,13 +164,13 @@ export function useWebSocket({
     }, connectionTimeout);
 
     try {
-      console.log(TAG, 'Creating WebSocket instance...');
+      debugLog(TAG, 'Creating WebSocket instance...');
       const ws = new WebSocket(targetUrl);
       wsRef.current = ws;
-      console.log(TAG, `WebSocket created, readyState=${ws.readyState} (0=CONNECTING, 1=OPEN)`);
+      debugLog(TAG, `WebSocket created, readyState=${ws.readyState} (0=CONNECTING, 1=OPEN)`);
 
       ws.onopen = () => {
-        console.log(TAG, '✓ onopen — connection established');
+        debugLog(TAG, '✓ onopen — connection established');
         clearTimeout(connectionTimeoutRef.current!);
         connectionTimeoutRef.current = null;
         isConnectingRef.current = false;
@@ -174,7 +181,7 @@ export function useWebSocket({
       };
 
       ws.onclose = (event) => {
-        console.log(
+        debugLog(
           TAG,
           `✗ onclose — code=${event.code} reason="${event.reason}" wasClean=${event.wasClean}`,
         );
@@ -185,7 +192,7 @@ export function useWebSocket({
         cleanupWebSocket();
         
         if (manualDisconnectRef.current) {
-          console.log(TAG, 'Manual disconnect — not reconnecting');
+          debugLog(TAG, 'Manual disconnect — not reconnecting');
           setConnectionState('closed');
         } else {
           setConnectionState('closed');
@@ -193,7 +200,7 @@ export function useWebSocket({
           if (reconnectAttemptsRef.current < maxReconnectAttempts) {
             const delay = getNextReconnectDelay();
             reconnectAttemptsRef.current += 1;
-            console.log(
+            debugLog(
               TAG,
               `Scheduling reconnect #${reconnectAttemptsRef.current}/${maxReconnectAttempts} in ${delay}ms`,
             );
@@ -202,14 +209,14 @@ export function useWebSocket({
               performConnect(activeUrlRef.current);
             }, delay);
           } else {
-            console.log(TAG, `Max reconnect attempts (${maxReconnectAttempts}) reached — giving up`);
+            debugLog(TAG, `Max reconnect attempts (${maxReconnectAttempts}) reached — giving up`);
             setConnectionState('error');
           }
         }
       };
 
       ws.onerror = (event) => {
-        console.log(TAG, '✗ onerror:', event);
+        debugLog(TAG, '✗ onerror:', event);
         // onerror is always followed by onclose in the WebSocket spec
       };
 
@@ -230,7 +237,7 @@ export function useWebSocket({
         }
       };
     } catch (err) {
-      console.log(TAG, '✗ WebSocket constructor threw:', err);
+      debugLog(TAG, '✗ WebSocket constructor threw:', err);
       clearTimeout(connectionTimeoutRef.current!);
       connectionTimeoutRef.current = null;
       isConnectingRef.current = false;
@@ -239,7 +246,7 @@ export function useWebSocket({
       if (reconnectAttemptsRef.current < maxReconnectAttempts) {
         const delay = getNextReconnectDelay();
         reconnectAttemptsRef.current += 1;
-        console.log(
+        debugLog(
           TAG,
           `Scheduling reconnect #${reconnectAttemptsRef.current}/${maxReconnectAttempts} in ${delay}ms (after throw)`,
         );
@@ -254,11 +261,11 @@ export function useWebSocket({
   const connect = useCallback((explicitUrl?: string) => {
     const targetUrl = explicitUrl ?? activeUrlRef.current;
     if (!targetUrl) {
-      console.log(TAG, 'connect() called with no URL — ignoring');
+      debugLog(TAG, 'connect() called with no URL — ignoring');
       return;
     }
     
-    console.log(TAG, `connect() → url="${targetUrl}"`);
+    debugLog(TAG, `connect() → url="${targetUrl}"`);
     activeUrlRef.current = targetUrl;
     clearAllTimers();
     reconnectAttemptsRef.current = 0;
@@ -268,7 +275,7 @@ export function useWebSocket({
   }, [performConnect, clearAllTimers, cleanupWebSocket]);
 
   const disconnect = useCallback(() => {
-    console.log(TAG, 'disconnect() called');
+    debugLog(TAG, 'disconnect() called');
     clearAllTimers();
     manualDisconnectRef.current = true;
     stopPingInterval();
@@ -305,7 +312,7 @@ export function useWebSocket({
       if (previousState === 'background' && nextAppState === 'active') {
         // App came to foreground - check connection
         if (connectionState === 'closed' || connectionState === 'error') {
-          console.log(TAG, 'App returned to foreground, attempting reconnect');
+          debugLog(TAG, 'App returned to foreground, attempting reconnect');
           reconnectAttemptsRef.current = 0;
           performConnect(activeUrlRef.current);
         }

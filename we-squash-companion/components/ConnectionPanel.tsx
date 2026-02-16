@@ -1,24 +1,27 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Platform,
   Pressable,
   StyleSheet,
+  Text,
   TextInput,
   TouchableOpacity,
   View,
-  Platform,
   useColorScheme,
 } from 'react-native';
 import Animated, {
-  useAnimatedStyle,
-  withSpring,
-  withTiming,
+  Easing,
   FadeIn,
   FadeInUp,
+  cancelAnimation,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
 } from 'react-native-reanimated';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 
-import { ThemedText } from '@/components/themed-text';
 import type { SensorData } from '@/hooks/useSensorStream';
 
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'closing' | 'closed' | 'error';
@@ -32,6 +35,7 @@ export interface DiscoveredServer {
 const FALLBACK_EULER = { alpha: 0, beta: 0, gamma: 0 };
 const FALLBACK_VEC3 = { x: 0, y: 0, z: 0 };
 const CALIBRATION_HOLD_DURATION_MS = 3000;
+const CALIBRATION_PROGRESS_TICK_MS = 90;
 
 interface ConnectionPanelProps {
   ipAddress: string;
@@ -50,6 +54,56 @@ interface ConnectionPanelProps {
   discoveredServer: DiscoveredServer | null;
   onScanQRCode?: () => void;
   onRequestCalibration?: () => boolean | Promise<boolean>;
+}
+
+interface Palette {
+  pageBackground: string;
+  cardBackground: string;
+  cardBackgroundSecondary: string;
+  border: string;
+  textPrimary: string;
+  textSecondary: string;
+  accentBlue: string;
+  accentGreen: string;
+  accentOrange: string;
+  accentRed: string;
+}
+
+interface ConnectionHeaderViewModel {
+  statusColor: string;
+  statusText: string;
+  pulseAnimation: boolean;
+}
+
+interface ConnectionControlSectionProps {
+  palette: Palette;
+  header: ConnectionHeaderViewModel;
+  ipAddress: string;
+  port: string;
+  onIpAddressChange: (value: string) => void;
+  onPortChange: (value: string) => void;
+  isConnected: boolean;
+  packetsSent: number;
+  latency?: number;
+  transportMode: TransportMode;
+  discoveredServer: DiscoveredServer | null;
+  onToggleConnection: () => void;
+  onTransportChange: (mode: TransportMode) => void;
+  onScanQRCode?: () => void;
+  canRequestCalibration: boolean;
+  calibrationButtonText: string;
+  calibrationStatusText: string;
+  calibrationProgressPercent: number;
+  calibrationProgressValue: { value: number };
+  onCalibrationPressIn: () => void;
+  onCalibrationPressOut: () => void;
+}
+
+interface TelemetrySectionProps {
+  palette: Palette;
+  rotation: SensorData['rotation'];
+  gyro: SensorData['gyro'];
+  accel: SensorData['accel'];
 }
 
 export function ConnectionPanel({
@@ -72,20 +126,89 @@ export function ConnectionPanel({
 }: ConnectionPanelProps) {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
-  const [calibrationProgress, setCalibrationProgress] = useState(0);
   const [isCalibrationHolding, setIsCalibrationHolding] = useState(false);
   const [isCalibrationSubmitting, setIsCalibrationSubmitting] = useState(false);
+  const [calibrationProgressPercent, setCalibrationProgressPercent] = useState(0);
 
   const holdStartedAtRef = useRef(0);
   const holdTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const holdAnimationFrameRef = useRef<number | null>(null);
   const holdHapticTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdProgressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const holdActiveRef = useRef(false);
   const holdCompletedRef = useRef(false);
 
+  const calibrationProgressValue = useSharedValue(0);
+
+  const palette = useMemo<Palette>(
+    () =>
+      isDark
+        ? {
+            pageBackground: '#070B10',
+            cardBackground: '#121922',
+            cardBackgroundSecondary: '#182331',
+            border: '#28384B',
+            textPrimary: '#F5F8FC',
+            textSecondary: '#8FA1B8',
+            accentBlue: '#0A84FF',
+            accentGreen: '#32D74B',
+            accentOrange: '#FF9F0A',
+            accentRed: '#FF453A',
+          }
+        : {
+            pageBackground: '#F3F7FB',
+            cardBackground: '#FFFFFF',
+            cardBackgroundSecondary: '#E9F1F9',
+            border: '#D3DFEB',
+            textPrimary: '#0C1621',
+            textSecondary: '#5B6D82',
+            accentBlue: '#006FE5',
+            accentGreen: '#1FAD38',
+            accentOrange: '#D67A00',
+            accentRed: '#CC2F24',
+          },
+    [isDark],
+  );
+
+  const header = useMemo<ConnectionHeaderViewModel>(() => {
+    switch (connectionState) {
+      case 'idle':
+      case 'closed':
+        return {
+          statusColor: palette.textSecondary,
+          statusText: 'Ready to Sprint',
+          pulseAnimation: false,
+        };
+      case 'connecting':
+        return {
+          statusColor: palette.accentOrange,
+          statusText: 'Connecting...',
+          pulseAnimation: true,
+        };
+      case 'open':
+        return {
+          statusColor: palette.accentGreen,
+          statusText: 'Live Tracking',
+          pulseAnimation: false,
+        };
+      case 'error':
+      case 'closing':
+        return {
+          statusColor: palette.accentRed,
+          statusText: connectionState === 'error' ? 'Connection Error' : 'Disconnecting...',
+          pulseAnimation: false,
+        };
+      default:
+        return {
+          statusColor: palette.textSecondary,
+          statusText: 'Unknown',
+          pulseAnimation: false,
+        };
+    }
+  }, [connectionState, palette]);
+
   const handleToggleConnection = useCallback(() => {
     if (Platform.OS === 'ios') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
 
     if (isConnected) {
@@ -98,84 +221,15 @@ export function ConnectionPanel({
     }
   }, [isConnected, ipAddress, port, onConnect, onDisconnect, transportMode, discoveredServer]);
 
-  const handleTransportChange = useCallback((mode: TransportMode) => {
-    if (Platform.OS === 'ios') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    onTransportModeChange(mode);
-  }, [onTransportModeChange]);
-
-  const { statusColor, statusText, pulseAnimation } = useMemo(() => {
-    switch (connectionState) {
-      case 'idle':
-      case 'closed':
-        return {
-          statusColor: isDark ? '#8E8E93' : '#C7C7CC',
-          statusText: 'Ready to connect',
-          pulseAnimation: false,
-        };
-      case 'connecting':
-        return {
-          statusColor: '#FF9500',
-          statusText: 'Connecting...',
-          pulseAnimation: true,
-        };
-      case 'open':
-        return {
-          statusColor: '#34C759',
-          statusText: 'Connected',
-          pulseAnimation: false,
-        };
-      case 'error':
-      case 'closing':
-        return {
-          statusColor: '#FF3B30',
-          statusText: connectionState === 'error' ? 'Connection Error' : 'Disconnecting...',
-          pulseAnimation: false,
-        };
-      default:
-        return {
-          statusColor: isDark ? '#8E8E93' : '#C7C7CC',
-          statusText: 'Unknown',
-          pulseAnimation: false,
-        };
-    }
-  }, [connectionState, isDark]);
-
-  const pulseStyle = useAnimatedStyle(() => ({
-    transform: [
-      {
-        scale: pulseAnimation
-          ? withTiming(1.2, { duration: 500 })
-          : withSpring(1),
-      },
-    ],
-    opacity: pulseAnimation
-      ? withTiming(0.5, { duration: 500 })
-      : withTiming(1),
-  }));
-
-  const rotation = sensorData?.rotation ?? FALLBACK_EULER;
-  const gyro = sensorData?.gyro ?? FALLBACK_EULER;
-  const accel = sensorData?.accel ?? FALLBACK_VEC3;
-
-  const buttonText = isConnected ? 'Disconnect' : 'Connect';
-  const buttonColor = isConnected ? '#FF3B30' : '#007AFF';
-
-  const backgroundColor = isDark ? '#1C1C1E' : '#FFFFFF';
-  const secondaryBackground = isDark ? '#2C2C2E' : '#F2F2F7';
-  const textColor = isDark ? '#FFFFFF' : '#000000';
-  const secondaryTextColor = isDark ? '#8E8E93' : '#8E8E93';
-  const borderColor = isDark ? '#38383A' : '#E5E5EA';
-
-  const isUDPDiscovered = transportMode === 'udp' && discoveredServer !== null;
-
-  const handleQRPress = useCallback(() => {
-    if (Platform.OS === 'ios') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
-    onScanQRCode?.();
-  }, [onScanQRCode]);
+  const handleTransportChange = useCallback(
+    (mode: TransportMode) => {
+      if (Platform.OS === 'ios') {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+      }
+      onTransportModeChange(mode);
+    },
+    [onTransportModeChange],
+  );
 
   const clearCalibrationTimers = useCallback(() => {
     if (holdTimeoutRef.current) {
@@ -186,27 +240,14 @@ export function ConnectionPanel({
       clearTimeout(holdHapticTimeoutRef.current);
       holdHapticTimeoutRef.current = null;
     }
-    if (holdAnimationFrameRef.current !== null) {
-      cancelAnimationFrame(holdAnimationFrameRef.current);
-      holdAnimationFrameRef.current = null;
+    if (holdProgressIntervalRef.current) {
+      clearInterval(holdProgressIntervalRef.current);
+      holdProgressIntervalRef.current = null;
     }
-  }, []);
+    cancelAnimation(calibrationProgressValue);
+  }, [calibrationProgressValue]);
 
-  const tickCalibrationProgress = () => {
-    if (!holdActiveRef.current) {
-      return;
-    }
-
-    const elapsed = Date.now() - holdStartedAtRef.current;
-    const progress = Math.min(1, elapsed / CALIBRATION_HOLD_DURATION_MS);
-    setCalibrationProgress(progress);
-
-    if (progress < 1) {
-      holdAnimationFrameRef.current = requestAnimationFrame(tickCalibrationProgress);
-    }
-  };
-
-  const runCalibrationHaptics = () => {
+  const runCalibrationHaptics = useCallback(() => {
     if (Platform.OS !== 'ios' || !holdActiveRef.current) {
       return;
     }
@@ -230,7 +271,7 @@ export function ConnectionPanel({
     holdHapticTimeoutRef.current = setTimeout(() => {
       runCalibrationHaptics();
     }, nextInterval);
-  };
+  }, []);
 
   const completeCalibrationHold = useCallback(async () => {
     if (holdCompletedRef.current) {
@@ -241,7 +282,8 @@ export function ConnectionPanel({
     holdActiveRef.current = false;
     clearCalibrationTimers();
     setIsCalibrationHolding(false);
-    setCalibrationProgress(1);
+    calibrationProgressValue.value = 1;
+    setCalibrationProgressPercent(100);
     setIsCalibrationSubmitting(true);
 
     const success = onRequestCalibration ? await Promise.resolve(onRequestCalibration()) : false;
@@ -257,14 +299,16 @@ export function ConnectionPanel({
 
     if (success) {
       setTimeout(() => {
-        setCalibrationProgress(0);
+        calibrationProgressValue.value = withTiming(0, { duration: 280, easing: Easing.out(Easing.quad) });
+        setCalibrationProgressPercent(0);
       }, 500);
     } else {
-      setCalibrationProgress(0);
+      calibrationProgressValue.value = withTiming(0, { duration: 220, easing: Easing.out(Easing.quad) });
+      setCalibrationProgressPercent(0);
     }
-  }, [clearCalibrationTimers, onRequestCalibration]);
+  }, [calibrationProgressValue, clearCalibrationTimers, onRequestCalibration]);
 
-  const handleCalibrationPressIn = () => {
+  const handleCalibrationPressIn = useCallback(() => {
     if (!isConnected || !onRequestCalibration || isCalibrationSubmitting) {
       return;
     }
@@ -272,22 +316,41 @@ export function ConnectionPanel({
     holdCompletedRef.current = false;
     holdActiveRef.current = true;
     holdStartedAtRef.current = Date.now();
-    setCalibrationProgress(0);
+    setCalibrationProgressPercent(0);
+    calibrationProgressValue.value = 0;
     setIsCalibrationHolding(true);
 
     if (Platform.OS === 'ios') {
       void Haptics.selectionAsync();
     }
 
-    tickCalibrationProgress();
-    runCalibrationHaptics();
+    calibrationProgressValue.value = withTiming(1, {
+      duration: CALIBRATION_HOLD_DURATION_MS,
+      easing: Easing.linear,
+    });
 
+    holdProgressIntervalRef.current = setInterval(() => {
+      if (!holdActiveRef.current) {
+        return;
+      }
+      const elapsed = Date.now() - holdStartedAtRef.current;
+      setCalibrationProgressPercent(Math.min(100, Math.round((elapsed / CALIBRATION_HOLD_DURATION_MS) * 100)));
+    }, CALIBRATION_PROGRESS_TICK_MS);
+
+    runCalibrationHaptics();
     holdTimeoutRef.current = setTimeout(() => {
       void completeCalibrationHold();
     }, CALIBRATION_HOLD_DURATION_MS);
-  };
+  }, [
+    calibrationProgressValue,
+    completeCalibrationHold,
+    isCalibrationSubmitting,
+    isConnected,
+    onRequestCalibration,
+    runCalibrationHaptics,
+  ]);
 
-  const handleCalibrationPressOut = () => {
+  const handleCalibrationPressOut = useCallback(() => {
     if (!holdActiveRef.current) {
       return;
     }
@@ -297,23 +360,25 @@ export function ConnectionPanel({
     setIsCalibrationHolding(false);
 
     if (!holdCompletedRef.current) {
-      setCalibrationProgress(0);
+      calibrationProgressValue.value = withTiming(0, { duration: 220, easing: Easing.out(Easing.quad) });
+      setCalibrationProgressPercent(0);
       if (Platform.OS === 'ios') {
         void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
       }
     }
-  };
+  }, [calibrationProgressValue, clearCalibrationTimers]);
 
   useEffect(() => {
     if (!isConnected) {
       holdActiveRef.current = false;
       holdCompletedRef.current = false;
       clearCalibrationTimers();
-      setCalibrationProgress(0);
+      calibrationProgressValue.value = 0;
+      setCalibrationProgressPercent(0);
       setIsCalibrationHolding(false);
       setIsCalibrationSubmitting(false);
     }
-  }, [clearCalibrationTimers, isConnected]);
+  }, [calibrationProgressValue, clearCalibrationTimers, isConnected]);
 
   useEffect(() => {
     return () => {
@@ -321,427 +386,555 @@ export function ConnectionPanel({
     };
   }, [clearCalibrationTimers]);
 
-  const calibrationProgressPercent = Math.round(calibrationProgress * 100);
   const canRequestCalibration = isConnected && Boolean(onRequestCalibration) && !isCalibrationSubmitting;
   const calibrationButtonText = isCalibrationSubmitting
     ? 'Starting calibration...'
     : isCalibrationHolding
-      ? 'Keep holding...'
+      ? 'Hold steady...'
       : 'Hold to Calibrate (3s)';
   const calibrationStatusText = isCalibrationSubmitting
-    ? 'Calibration requested on game.'
+    ? 'Calibration request sent to game.'
     : isCalibrationHolding
-      ? 'Hold steady. Haptics speed up as the timer completes.'
-      : 'Press and hold for 3 seconds.';
+      ? 'Keep posture fixed. Haptics accelerate near completion.'
+      : 'Right-side pose, side of phone up, back of phone facing camera.';
+
+  const rotation = sensorData?.rotation ?? FALLBACK_EULER;
+  const gyro = sensorData?.gyro ?? FALLBACK_EULER;
+  const accel = sensorData?.accel ?? FALLBACK_VEC3;
 
   return (
-    <Animated.View entering={FadeInUp.duration(400)} style={styles.container}>
-      <View style={[styles.header, { backgroundColor }]}>
-        <ThemedText type="title" style={[styles.title, { color: textColor }]}>
-          WeSquash
-        </ThemedText>
-        <ThemedText style={[styles.subtitle, { color: secondaryTextColor }]}>
-          Motion Controller
-        </ThemedText>
+    <Animated.View entering={FadeInUp.duration(420)} style={styles.container}>
+      <View
+        pointerEvents="none"
+        style={[styles.glowOrb, styles.glowOrbTop, { backgroundColor: isDark ? '#0A84FF33' : '#0A84FF1F' }]}
+      />
+      <View
+        pointerEvents="none"
+        style={[styles.glowOrb, styles.glowOrbBottom, { backgroundColor: isDark ? '#32D74B2B' : '#32D74B1F' }]}
+      />
 
-        <View style={styles.statusContainer}>
+      <ConnectionControlSection
+        palette={palette}
+        header={header}
+        ipAddress={ipAddress}
+        port={port}
+        onIpAddressChange={onIpAddressChange}
+        onPortChange={onPortChange}
+        isConnected={isConnected}
+        packetsSent={packetsSent}
+        latency={latency}
+        transportMode={transportMode}
+        discoveredServer={discoveredServer}
+        onToggleConnection={handleToggleConnection}
+        onTransportChange={handleTransportChange}
+        onScanQRCode={onScanQRCode}
+        canRequestCalibration={canRequestCalibration}
+        calibrationButtonText={calibrationButtonText}
+        calibrationStatusText={calibrationStatusText}
+        calibrationProgressPercent={calibrationProgressPercent}
+        calibrationProgressValue={calibrationProgressValue}
+        onCalibrationPressIn={handleCalibrationPressIn}
+        onCalibrationPressOut={handleCalibrationPressOut}
+      />
+
+      <SensorTelemetrySection palette={palette} rotation={rotation} gyro={gyro} accel={accel} />
+    </Animated.View>
+  );
+}
+
+const ConnectionControlSection = memo(function ConnectionControlSection({
+  palette,
+  header,
+  ipAddress,
+  port,
+  onIpAddressChange,
+  onPortChange,
+  isConnected,
+  packetsSent,
+  latency,
+  transportMode,
+  discoveredServer,
+  onToggleConnection,
+  onTransportChange,
+  onScanQRCode,
+  canRequestCalibration,
+  calibrationButtonText,
+  calibrationStatusText,
+  calibrationProgressPercent,
+  calibrationProgressValue,
+  onCalibrationPressIn,
+  onCalibrationPressOut,
+}: ConnectionControlSectionProps) {
+  const isUDPDiscovered = transportMode === 'udp' && discoveredServer !== null;
+  const pulseStyle = useAnimatedStyle(() => ({
+    transform: [
+      {
+        scale: header.pulseAnimation ? withTiming(1.15, { duration: 480 }) : withSpring(1),
+      },
+    ],
+    opacity: header.pulseAnimation ? withTiming(0.5, { duration: 480 }) : withTiming(1),
+  }));
+
+  const calibrationFillStyle = useAnimatedStyle(() => ({
+    width: `${Math.max(0, Math.min(1, calibrationProgressValue.value)) * 100}%`,
+  }));
+
+  return (
+    <>
+      <View style={[styles.heroCard, { backgroundColor: palette.cardBackground, borderColor: palette.border }]}>
+        <Text style={[styles.heroLabel, { color: palette.textSecondary }]}>MOTION TRAINING</Text>
+        <Text style={[styles.heroTitle, { color: palette.textPrimary }]}>WeSquash Fitness Controller</Text>
+        <View style={styles.statusRow}>
           <Animated.View
             style={[
               styles.statusDot,
-              { backgroundColor: statusColor },
+              {
+                backgroundColor: header.statusColor,
+                shadowColor: header.statusColor,
+              },
               pulseStyle,
             ]}
           />
-          <ThemedText style={[styles.statusText, { color: statusColor }]}>
-            {statusText}
-          </ThemedText>
+          <Text style={[styles.statusText, { color: header.statusColor }]}>{header.statusText}</Text>
         </View>
       </View>
 
-      <View style={[styles.card, { backgroundColor, borderColor }]}>
-        <ThemedText style={[styles.cardTitle, { color: textColor }]}>
-          Server Connection
-        </ThemedText>
+      <View style={[styles.card, { backgroundColor: palette.cardBackground, borderColor: palette.border }]}>
+        <Text style={[styles.cardTitle, { color: palette.textPrimary }]}>Connection</Text>
 
-        <View style={[styles.transportSelector, { backgroundColor: secondaryBackground }]}>
+        <View style={[styles.transportSelector, { backgroundColor: palette.cardBackgroundSecondary }]}>
           <TouchableOpacity
             style={[
               styles.transportButton,
-              transportMode === 'udp' && { backgroundColor: '#007AFF' },
+              transportMode === 'udp' && { backgroundColor: palette.accentBlue },
             ]}
-            onPress={() => handleTransportChange('udp')}
-            activeOpacity={0.8}
+            onPress={() => onTransportChange('udp')}
+            activeOpacity={0.82}
             disabled={isConnected}
           >
-            <ThemedText
+            <Text
               style={[
                 styles.transportButtonText,
-                { color: transportMode === 'udp' ? '#FFFFFF' : textColor },
+                { color: transportMode === 'udp' ? '#FFFFFF' : palette.textPrimary },
               ]}
             >
-              UDP (Auto)
-            </ThemedText>
+              Auto (UDP)
+            </Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[
               styles.transportButton,
-              transportMode === 'websocket' && { backgroundColor: '#007AFF' },
+              transportMode === 'websocket' && { backgroundColor: palette.accentBlue },
             ]}
-            onPress={() => handleTransportChange('websocket')}
-            activeOpacity={0.8}
+            onPress={() => onTransportChange('websocket')}
+            activeOpacity={0.82}
             disabled={isConnected}
           >
-            <ThemedText
+            <Text
               style={[
                 styles.transportButtonText,
-                { color: transportMode === 'websocket' ? '#FFFFFF' : textColor },
+                { color: transportMode === 'websocket' ? '#FFFFFF' : palette.textPrimary },
               ]}
             >
               Manual (WS)
-            </ThemedText>
+            </Text>
           </TouchableOpacity>
         </View>
 
-        {isUDPDiscovered && (
-          <View style={[styles.discoveryBadge, { backgroundColor: '#34C759' }]}>
-            <ThemedText style={styles.discoveryBadgeText}>
+        {isUDPDiscovered && discoveredServer && (
+          <View style={[styles.discoveryBadge, { backgroundColor: palette.accentGreen }]}>
+            <Ionicons name="flash" size={16} color="#FFFFFF" />
+            <Text style={styles.discoveryBadgeText}>
               Auto-discovered: {discoveredServer.ip}:{discoveredServer.port}
-            </ThemedText>
+            </Text>
           </View>
         )}
 
         {!isUDPDiscovered && !isConnected && onScanQRCode && (
           <TouchableOpacity
-            style={[styles.qrButton, { backgroundColor: secondaryBackground }]}
-            onPress={handleQRPress}
+            style={[styles.qrButton, { backgroundColor: palette.cardBackgroundSecondary }]}
+            onPress={onScanQRCode}
             activeOpacity={0.8}
           >
-            <Ionicons name="qr-code-outline" size={24} color="#007AFF" />
-            <ThemedText style={[styles.qrButtonText, { color: textColor }]}>
-              Scan QR Code
-            </ThemedText>
-            <Ionicons name="chevron-forward" size={20} color={secondaryTextColor} />
+            <Ionicons name="qr-code-outline" size={24} color={palette.accentBlue} />
+            <Text style={[styles.qrButtonText, { color: palette.textPrimary }]}>Scan Court QR Code</Text>
+            <Ionicons name="chevron-forward" size={20} color={palette.textSecondary} />
           </TouchableOpacity>
         )}
 
         {transportMode === 'websocket' && (
           <View style={styles.inputRow}>
             <View style={[styles.inputContainer, { flex: 1 }]}>
-              <ThemedText style={[styles.inputLabel, { color: secondaryTextColor }]}>
-                IP Address
-              </ThemedText>
+              <Text style={[styles.inputLabel, { color: palette.textSecondary }]}>IP Address</Text>
               <TextInput
                 style={[
                   styles.input,
                   {
-                    backgroundColor: secondaryBackground,
-                    color: textColor,
-                    borderColor,
+                    backgroundColor: palette.cardBackgroundSecondary,
+                    color: palette.textPrimary,
+                    borderColor: palette.border,
                   },
                 ]}
                 placeholder="192.168.1.100"
-                placeholderTextColor={secondaryTextColor}
+                placeholderTextColor={palette.textSecondary}
                 value={ipAddress}
                 onChangeText={onIpAddressChange}
                 keyboardType="numbers-and-punctuation"
                 autoCapitalize="none"
                 autoCorrect={false}
                 editable={!isConnected}
-                selectionColor="#007AFF"
+                selectionColor={palette.accentBlue}
               />
             </View>
 
             <View style={styles.inputContainer}>
-              <ThemedText style={[styles.inputLabel, { color: secondaryTextColor }]}>
-                Port
-              </ThemedText>
+              <Text style={[styles.inputLabel, { color: palette.textSecondary }]}>Port</Text>
               <TextInput
                 style={[
                   styles.input,
                   styles.portInput,
                   {
-                    backgroundColor: secondaryBackground,
-                    color: textColor,
-                    borderColor,
+                    backgroundColor: palette.cardBackgroundSecondary,
+                    color: palette.textPrimary,
+                    borderColor: palette.border,
                   },
                 ]}
                 placeholder="9080"
-                placeholderTextColor={secondaryTextColor}
+                placeholderTextColor={palette.textSecondary}
                 value={port}
                 onChangeText={onPortChange}
                 keyboardType="number-pad"
                 editable={!isConnected}
-                selectionColor="#007AFF"
+                selectionColor={palette.accentBlue}
               />
             </View>
           </View>
         )}
 
         <TouchableOpacity
-          style={[styles.button, { backgroundColor: buttonColor }]}
-          onPress={handleToggleConnection}
-          activeOpacity={0.8}
+          style={[
+            styles.actionButton,
+            { backgroundColor: isConnected ? palette.accentRed : palette.accentBlue },
+          ]}
+          onPress={onToggleConnection}
+          activeOpacity={0.84}
         >
-          <ThemedText style={styles.buttonText}>{buttonText}</ThemedText>
+          <Text style={styles.actionButtonText}>{isConnected ? 'End Session' : 'Start Session'}</Text>
         </TouchableOpacity>
       </View>
 
       {isConnected && (
-        <Animated.View
-          entering={FadeIn.duration(300)}
-          style={[styles.card, { backgroundColor, borderColor }]}
-        >
-          <ThemedText style={[styles.cardTitle, { color: textColor }]}>
-            Connection Stats
-          </ThemedText>
-          <View style={styles.statsGrid}>
-            <StatItem
-              label="Packets"
-              value={packetsSent.toString()}
-              isDark={isDark}
-            />
+        <Animated.View entering={FadeIn.duration(250)} style={[styles.card, { backgroundColor: palette.cardBackground, borderColor: palette.border }]}>
+          <Text style={[styles.cardTitle, { color: palette.textPrimary }]}>Live Stats</Text>
+          <View style={styles.statsRow}>
+            <StatPuck label="Packets" value={packetsSent.toString()} color={palette.accentBlue} />
             {latency !== undefined && (
-              <StatItem
-                label="Latency"
-                value={`${latency}ms`}
-                isDark={isDark}
-              />
+              <StatPuck label="Latency" value={`${latency}ms`} color={palette.accentGreen} />
             )}
-            <StatItem
-              label="Transport"
-              value={transportMode === 'udp' ? 'UDP' : 'WS'}
-              isDark={isDark}
-            />
+            <StatPuck label="Mode" value={transportMode === 'udp' ? 'UDP' : 'WS'} color={palette.accentOrange} />
           </View>
         </Animated.View>
       )}
 
-      {isConnected && onRequestCalibration && (
-        <Animated.View
-          entering={FadeIn.duration(300)}
-          style={[styles.card, { backgroundColor, borderColor }]}
-        >
-          <ThemedText style={[styles.cardTitle, { color: textColor }]}>
-            Calibration
-          </ThemedText>
-          <ThemedText style={[styles.calibrationHint, { color: secondaryTextColor }]}>
-            Hold your arms fully extended to the right, keep the phone side pointing up,
-            and point the back of the phone toward the Godot camera.
-          </ThemedText>
+      {isConnected && (
+        <Animated.View entering={FadeIn.duration(250)} style={[styles.card, { backgroundColor: palette.cardBackground, borderColor: palette.border }]}>
+          <Text style={[styles.cardTitle, { color: palette.textPrimary }]}>Calibration Drill</Text>
+          <Text style={[styles.calibrationHint, { color: palette.textSecondary }]}>
+            Hold your arm extended right, phone side up, and point the back of the phone toward the Godot camera.
+          </Text>
 
           <Pressable
             style={({ pressed }) => [
               styles.calibrationButton,
               {
-                backgroundColor: secondaryBackground,
-                borderColor,
-                opacity: canRequestCalibration ? 1 : 0.65,
+                backgroundColor: palette.cardBackgroundSecondary,
+                borderColor: palette.border,
+                opacity: canRequestCalibration ? 1 : 0.6,
               },
               pressed && canRequestCalibration && styles.calibrationButtonPressed,
             ]}
-            onPressIn={handleCalibrationPressIn}
-            onPressOut={handleCalibrationPressOut}
-            onTouchCancel={handleCalibrationPressOut}
+            onPressIn={onCalibrationPressIn}
+            onPressOut={onCalibrationPressOut}
+            onTouchCancel={onCalibrationPressOut}
             disabled={!canRequestCalibration}
           >
             <View style={styles.calibrationProgressTrack}>
-              <View
+              <Animated.View
                 style={[
                   styles.calibrationProgressFill,
-                  { width: `${calibrationProgressPercent}%` },
+                  { backgroundColor: palette.accentBlue },
+                  calibrationFillStyle,
                 ]}
               />
             </View>
-            <ThemedText style={[styles.calibrationButtonText, { color: textColor }]}>
-              {calibrationButtonText}
-            </ThemedText>
-            <ThemedText style={[styles.calibrationProgressText, { color: secondaryTextColor }]}>
+            <Text style={[styles.calibrationButtonText, { color: palette.textPrimary }]}>{calibrationButtonText}</Text>
+            <Text style={[styles.calibrationProgressText, { color: palette.textSecondary }]}>
               {calibrationProgressPercent}%
-            </ThemedText>
+            </Text>
           </Pressable>
 
-          <ThemedText style={[styles.calibrationStatus, { color: secondaryTextColor }]}>
-            {calibrationStatusText}
-          </ThemedText>
+          <Text style={[styles.calibrationStatus, { color: palette.textSecondary }]}>{calibrationStatusText}</Text>
         </Animated.View>
       )}
-
-      <View style={[styles.card, { backgroundColor, borderColor }]}>
-        <ThemedText style={[styles.cardTitle, { color: textColor }]}>
-          Orientation
-        </ThemedText>
-        <View style={styles.sensorGrid}>
-          <SensorValue label="α" value={rotation.alpha.toFixed(3)} unit="rad" isDark={isDark} />
-          <SensorValue label="β" value={rotation.beta.toFixed(3)} unit="rad" isDark={isDark} />
-          <SensorValue label="γ" value={rotation.gamma.toFixed(3)} unit="rad" isDark={isDark} />
-        </View>
-      </View>
-
-      <View style={[styles.card, { backgroundColor, borderColor }]}>
-        <ThemedText style={[styles.cardTitle, { color: textColor }]}>
-          Gyroscope
-        </ThemedText>
-        <View style={styles.sensorGrid}>
-          <SensorValue label="X" value={gyro.alpha.toFixed(1)} unit="°/s" isDark={isDark} />
-          <SensorValue label="Y" value={gyro.beta.toFixed(1)} unit="°/s" isDark={isDark} />
-          <SensorValue label="Z" value={gyro.gamma.toFixed(1)} unit="°/s" isDark={isDark} />
-        </View>
-      </View>
-
-      <View style={[styles.card, { backgroundColor, borderColor }]}>
-        <ThemedText style={[styles.cardTitle, { color: textColor }]}>
-          Acceleration
-        </ThemedText>
-        <View style={styles.sensorGrid}>
-          <SensorValue label="X" value={accel.x.toFixed(2)} unit="m/s²" isDark={isDark} />
-          <SensorValue label="Y" value={accel.y.toFixed(2)} unit="m/s²" isDark={isDark} />
-          <SensorValue label="Z" value={accel.z.toFixed(2)} unit="m/s²" isDark={isDark} />
-        </View>
-      </View>
-    </Animated.View>
+    </>
   );
-}
+});
 
-function StatItem({
-  label,
-  value,
-  isDark,
-}: {
-  label: string;
-  value: string;
-  isDark: boolean;
-}) {
+const SensorTelemetrySection = memo(function SensorTelemetrySection({
+  palette,
+  rotation,
+  gyro,
+  accel,
+}: TelemetrySectionProps) {
+  const orientationLoad = useMemo(() => {
+    const sum = Math.abs(rotation.alpha) + Math.abs(rotation.beta) + Math.abs(rotation.gamma);
+    return Math.min(1, sum / (Math.PI * 2));
+  }, [rotation.alpha, rotation.beta, rotation.gamma]);
+
+  const gyroLoad = useMemo(() => {
+    const sum = Math.abs(gyro.alpha) + Math.abs(gyro.beta) + Math.abs(gyro.gamma);
+    return Math.min(1, sum / 1200);
+  }, [gyro.alpha, gyro.beta, gyro.gamma]);
+
+  const accelLoad = useMemo(() => {
+    const sum = Math.abs(accel.x) + Math.abs(accel.y) + Math.abs(accel.z);
+    return Math.min(1, sum / 20);
+  }, [accel.x, accel.y, accel.z]);
+
   return (
-    <View style={styles.statItem}>
-      <ThemedText
-        style={[styles.statValue, { color: isDark ? '#FFFFFF' : '#000000' }]}
-      >
-        {value}
-      </ThemedText>
-      <ThemedText style={[styles.statLabel, { color: '#8E8E93' }]}>{label}</ThemedText>
+    <View style={[styles.card, { backgroundColor: palette.cardBackground, borderColor: palette.border }]}>
+      <Text style={[styles.cardTitle, { color: palette.textPrimary }]}>Motion Vitals</Text>
+
+      <TelemetryCard
+        title="Orientation"
+        color={palette.accentBlue}
+        load={orientationLoad}
+        palette={palette}
+        metrics={[
+          { label: 'α', value: rotation.alpha.toFixed(3), unit: 'rad' },
+          { label: 'β', value: rotation.beta.toFixed(3), unit: 'rad' },
+          { label: 'γ', value: rotation.gamma.toFixed(3), unit: 'rad' },
+        ]}
+      />
+
+      <TelemetryCard
+        title="Gyroscope"
+        color={palette.accentOrange}
+        load={gyroLoad}
+        palette={palette}
+        metrics={[
+          { label: 'X', value: gyro.alpha.toFixed(1), unit: '°/s' },
+          { label: 'Y', value: gyro.beta.toFixed(1), unit: '°/s' },
+          { label: 'Z', value: gyro.gamma.toFixed(1), unit: '°/s' },
+        ]}
+      />
+
+      <TelemetryCard
+        title="Acceleration"
+        color={palette.accentGreen}
+        load={accelLoad}
+        palette={palette}
+        metrics={[
+          { label: 'X', value: accel.x.toFixed(2), unit: 'm/s²' },
+          { label: 'Y', value: accel.y.toFixed(2), unit: 'm/s²' },
+          { label: 'Z', value: accel.z.toFixed(2), unit: 'm/s²' },
+        ]}
+      />
     </View>
   );
+});
+
+interface TelemetryCardProps {
+  title: string;
+  color: string;
+  load: number;
+  palette: Palette;
+  metrics: { label: string; value: string; unit: string }[];
 }
 
-function SensorValue({
-  label,
-  value,
-  unit,
-  isDark,
-}: {
+const TelemetryCard = memo(function TelemetryCard({
+  title,
+  color,
+  load,
+  palette,
+  metrics,
+}: TelemetryCardProps) {
+  return (
+    <View style={[styles.telemetryCard, { backgroundColor: palette.cardBackgroundSecondary }]}>
+      <View style={styles.telemetryHeaderRow}>
+        <Text style={[styles.telemetryTitle, { color: palette.textPrimary }]}>{title}</Text>
+        <Text style={[styles.telemetryLoad, { color }]}>Load {Math.round(load * 100)}%</Text>
+      </View>
+      <View style={styles.loadTrack}>
+        <View style={[styles.loadFill, { width: `${load * 100}%`, backgroundColor: color }]} />
+      </View>
+      <View style={styles.metricRow}>
+        {metrics.map((metric) => (
+          <SensorMetric
+            key={`${title}-${metric.label}`}
+            label={metric.label}
+            value={metric.value}
+            unit={metric.unit}
+            color={color}
+            textColor={palette.textPrimary}
+            secondaryTextColor={palette.textSecondary}
+          />
+        ))}
+      </View>
+    </View>
+  );
+});
+
+interface SensorMetricProps {
   label: string;
   value: string;
   unit: string;
-  isDark: boolean;
-}) {
+  color: string;
+  textColor: string;
+  secondaryTextColor: string;
+}
+
+const SensorMetric = memo(function SensorMetric({
+  label,
+  value,
+  unit,
+  color,
+  textColor,
+  secondaryTextColor,
+}: SensorMetricProps) {
   return (
-    <View style={styles.sensorItem}>
-      <ThemedText style={[styles.sensorLabel, { color: '#8E8E93' }]}>{label}</ThemedText>
-      <ThemedText
-        style={[styles.sensorValue, { color: isDark ? '#FFFFFF' : '#000000' }]}
-      >
-        {value}
-      </ThemedText>
-      <ThemedText style={[styles.sensorUnit, { color: '#8E8E93' }]}>{unit}</ThemedText>
+    <View style={styles.metricCard}>
+      <View style={[styles.metricBadge, { backgroundColor: color }]}>
+        <Text style={styles.metricBadgeText}>{label}</Text>
+      </View>
+      <Text style={[styles.metricValue, { color: textColor }]}>{value}</Text>
+      <Text style={[styles.metricUnit, { color: secondaryTextColor }]}>{unit}</Text>
     </View>
   );
+});
+
+interface StatPuckProps {
+  label: string;
+  value: string;
+  color: string;
 }
+
+const StatPuck = memo(function StatPuck({ label, value, color }: StatPuckProps) {
+  return (
+    <View style={[styles.statPuck, { borderColor: color }]}>
+      <Text style={[styles.statPuckValue, { color }]}>{value}</Text>
+      <Text style={styles.statPuckLabel}>{label}</Text>
+    </View>
+  );
+});
 
 const styles = StyleSheet.create({
   container: {
-    gap: 12,
+    gap: 14,
+    position: 'relative',
+    overflow: 'hidden',
   },
-  header: {
-    alignItems: 'center',
-    paddingVertical: 20,
-    borderRadius: 16,
-    marginBottom: 4,
+  glowOrb: {
+    position: 'absolute',
+    width: 240,
+    height: 240,
+    borderRadius: 999,
   },
-  title: {
-    fontSize: 34,
+  glowOrbTop: {
+    top: -120,
+    right: -80,
+  },
+  glowOrbBottom: {
+    bottom: -120,
+    left: -80,
+  },
+  heroCard: {
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingVertical: 18,
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  heroLabel: {
+    fontSize: 12,
+    letterSpacing: 1,
     fontWeight: '700',
   },
-  subtitle: {
-    fontSize: 17,
-    marginTop: 4,
+  heroTitle: {
+    fontSize: 30,
+    lineHeight: 34,
+    fontWeight: '800',
   },
-  statusContainer: {
+  statusRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginTop: 12,
+    marginTop: 6,
   },
   statusDot: {
     width: 10,
     height: 10,
     borderRadius: 5,
+    shadowOpacity: 0.55,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
   },
   statusText: {
-    fontSize: 15,
-    fontWeight: '500',
+    fontSize: 14,
+    fontWeight: '700',
   },
   card: {
-    borderRadius: 16,
-    padding: 16,
+    borderRadius: 18,
     borderWidth: 1,
-    gap: 16,
+    padding: 16,
+    gap: 14,
   },
   cardTitle: {
     fontSize: 20,
-    fontWeight: '600',
+    fontWeight: '700',
   },
   transportSelector: {
     flexDirection: 'row',
-    borderRadius: 10,
+    borderRadius: 12,
     padding: 4,
     gap: 4,
   },
   transportButton: {
     flex: 1,
+    borderRadius: 10,
     paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: 8,
     alignItems: 'center',
   },
   transportButtonText: {
-    fontSize: 15,
-    fontWeight: '600',
+    fontSize: 14,
+    fontWeight: '700',
   },
   discoveryBadge: {
-    borderRadius: 8,
+    borderRadius: 10,
     paddingVertical: 8,
     paddingHorizontal: 12,
+    flexDirection: 'row',
     alignItems: 'center',
+    gap: 8,
   },
   discoveryBadgeText: {
     color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '500',
-  },
-  searchingContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    paddingVertical: 8,
-  },
-  searchingText: {
-    fontSize: 14,
-    fontWeight: '500',
+    fontSize: 13,
+    fontWeight: '700',
+    flex: 1,
   },
   qrButton: {
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-    borderRadius: 12,
-    gap: 12,
+    gap: 10,
   },
   qrButtonText: {
     flex: 1,
-    fontSize: 17,
-    fontWeight: '500',
+    fontSize: 16,
+    fontWeight: '600',
   },
   inputRow: {
     flexDirection: 'row',
@@ -751,40 +944,64 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   inputLabel: {
-    fontSize: 13,
-    fontWeight: '500',
-    textTransform: 'uppercase',
+    fontSize: 12,
     letterSpacing: 0.5,
+    textTransform: 'uppercase',
+    fontWeight: '600',
   },
   input: {
     height: 44,
     borderRadius: 10,
+    borderWidth: 1,
     paddingHorizontal: 12,
     fontSize: 17,
-    borderWidth: 1,
   },
   portInput: {
-    width: 90,
+    width: 92,
   },
-  button: {
-    height: 50,
+  actionButton: {
     borderRadius: 12,
-    justifyContent: 'center',
+    height: 50,
     alignItems: 'center',
-    marginTop: 4,
+    justifyContent: 'center',
+    marginTop: 2,
   },
-  buttonText: {
+  actionButtonText: {
     color: '#FFFFFF',
     fontSize: 17,
+    fontWeight: '700',
+  },
+  statsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    justifyContent: 'space-between',
+  },
+  statPuck: {
+    flex: 1,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    gap: 2,
+  },
+  statPuckValue: {
+    fontSize: 23,
+    fontWeight: '800',
+    fontVariant: ['tabular-nums'],
+  },
+  statPuckLabel: {
+    color: '#8E8E93',
+    fontSize: 12,
     fontWeight: '600',
   },
   calibrationHint: {
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 13,
+    lineHeight: 19,
   },
   calibrationButton: {
-    borderWidth: 1,
     borderRadius: 12,
+    borderWidth: 1,
     padding: 12,
     gap: 8,
   },
@@ -800,55 +1017,80 @@ const styles = StyleSheet.create({
   calibrationProgressFill: {
     height: '100%',
     borderRadius: 999,
-    backgroundColor: '#0A84FF',
   },
   calibrationButtonText: {
-    fontSize: 17,
-    fontWeight: '600',
+    fontSize: 16,
+    fontWeight: '700',
   },
   calibrationProgressText: {
-    fontSize: 13,
+    fontSize: 12,
     fontVariant: ['tabular-nums'],
   },
   calibrationStatus: {
-    fontSize: 13,
+    fontSize: 12,
     lineHeight: 18,
   },
-  statsGrid: {
-    flexDirection: 'row',
-    gap: 24,
+  telemetryCard: {
+    borderRadius: 14,
+    padding: 12,
+    gap: 10,
   },
-  statItem: {
+  telemetryHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  telemetryTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  telemetryLoad: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  loadTrack: {
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: 'rgba(142, 142, 147, 0.25)',
+    overflow: 'hidden',
+  },
+  loadFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
+  metricRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  metricCard: {
+    flex: 1,
     alignItems: 'center',
     gap: 4,
+    backgroundColor: 'rgba(0, 0, 0, 0.08)',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
   },
-  statValue: {
-    fontSize: 28,
+  metricBadge: {
+    minWidth: 24,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    alignItems: 'center',
+  },
+  metricBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  metricValue: {
+    fontSize: 17,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
-  statLabel: {
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  sensorGrid: {
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-  },
-  sensorItem: {
-    alignItems: 'center',
-    gap: 4,
-  },
-  sensorLabel: {
-    fontSize: 15,
+  metricUnit: {
+    fontSize: 11,
     fontWeight: '600',
-  },
-  sensorValue: {
-    fontSize: 20,
-    fontWeight: '600',
-    fontVariant: ['tabular-nums'],
-  },
-  sensorUnit: {
-    fontSize: 12,
   },
 });

@@ -13,7 +13,7 @@ export default function RootLayout() {
         screenOptions={{
           headerShown: false,
           contentStyle: {
-            backgroundColor: colorScheme === 'dark' ? '#000000' : '#F2F2F7',
+            backgroundColor: colorScheme === 'dark' ? '#070B10' : '#F3F7FB',
           },
         }}
       >

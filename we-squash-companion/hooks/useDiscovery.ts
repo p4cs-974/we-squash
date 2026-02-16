@@ -2,6 +2,13 @@ import { useCallback, useEffect, useState } from 'react';
 import * as Linking from 'expo-linking';
 
 const TAG = '[Discovery]';
+const DEBUG_DISCOVERY_LOGS = false;
+
+function debugLog(...args: unknown[]) {
+  if (DEBUG_DISCOVERY_LOGS) {
+    console.log(...args);
+  }
+}
 
 export interface DiscoveredServer {
   ip: string;
@@ -11,17 +18,15 @@ export interface DiscoveredServer {
 
 interface UseDiscoveryReturn {
   discoveredServer: DiscoveredServer | null;
-  isListening: boolean;
   handleDeepLink: (url: string) => DiscoveredServer | null;
 }
 
 export function useDiscovery(): UseDiscoveryReturn {
   const [discoveredServer, setDiscoveredServer] = useState<DiscoveredServer | null>(null);
-  const [isListening, setIsListening] = useState(false);
 
   const handleDeepLink = useCallback((url: string): DiscoveredServer | null => {
     try {
-      console.log(TAG, 'Processing deep link:', url);
+      debugLog(TAG, 'Processing deep link:', url);
       
       const parsedUrl = new URL(url);
       
@@ -39,7 +44,7 @@ export function useDiscovery(): UseDiscoveryReturn {
             version: 1,
           };
           
-          console.log(TAG, 'Discovered server via deep link:', server);
+          debugLog(TAG, 'Discovered server via deep link:', server);
           setDiscoveredServer(server);
           return server;
         }
@@ -57,7 +62,7 @@ export function useDiscovery(): UseDiscoveryReturn {
     const getInitialURL = async () => {
       const initialUrl = await Linking.getInitialURL();
       if (initialUrl) {
-        console.log(TAG, 'App opened with URL:', initialUrl);
+        debugLog(TAG, 'App opened with URL:', initialUrl);
         handleDeepLink(initialUrl);
       }
     };
@@ -66,21 +71,17 @@ export function useDiscovery(): UseDiscoveryReturn {
 
     // Listen for deep links while app is running
     const subscription = Linking.addEventListener('url', ({ url }) => {
-      console.log(TAG, 'Received deep link while running:', url);
+      debugLog(TAG, 'Received deep link while running:', url);
       handleDeepLink(url);
     });
 
-    setIsListening(true);
-
     return () => {
       subscription.remove();
-      setIsListening(false);
     };
   }, [handleDeepLink]);
 
   return {
     discoveredServer,
-    isListening,
     handleDeepLink,
   };
 }
