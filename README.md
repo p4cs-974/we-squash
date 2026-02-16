@@ -1,11 +1,13 @@
 # WeSquash
 
-A motion-controlled squash game where your phone or Apple Watch becomes the racket. The device's orientation sensors drive a 3D model in real time inside a Godot 4.6 game engine.
+A motion-controlled squash game where your iPhone becomes the racket. The device's orientation sensors drive a 3D model in real time inside a Godot 4.6 game engine.
 
 ```
-                          WiFi (WebSocket)
-  iPhone / Apple Watch  ──────────────────►  Godot Game Server
-   sensor data @ 50-60Hz     ws://IP:9080      3D racket model
+                      WiFi (UDP primary, WebSocket fallback)
+                           ┌─────────────────────┐
+   iPhone ─────────────────┤  udp://IP:9081      ├► Godot Game Server
+   sensor data @ 50-60Hz   │  ws://IP:9080 (fb)  │    3D racket model
+                           └─────────────────────┘
 ```
 
 ## Project structure
@@ -13,52 +15,72 @@ A motion-controlled squash game where your phone or Apple Watch becomes the rack
 ```
 we-squash/
 ├── we-squash-game/              # Godot 4.6 game (receives sensor data, renders 3D)
-└── we-squash-companion/         # Expo React Native app (iPhone + Apple Watch controller)
-    └── targets/watch/           # SwiftUI watchOS app (embedded via @bacons/apple-targets)
+└── we-squash-companion/         # Expo React Native app (iPhone controller)
 ```
+
+## Transport Modes
+
+WeSquash uses a **dual-transport architecture** optimized for low latency:
+
+1. **UDP (Default)** — Binary protocol on port `9081` with auto-discovery
+2. **WebSocket (Fallback)** — JSON protocol on port `9080` if UDP fails
+
+If UDP connection drops, the phone automatically falls back to WebSocket while continuing to attempt UDP reconnection in the background.
 
 ## we-squash-game
 
-Godot 4.6 project using Forward Plus rendering and Jolt Physics. Runs a WebSocket server on port `9080` and waits for a device to connect.
+Godot 4.6 project using Forward Plus rendering and Jolt Physics. Runs two network servers simultaneously:
 
-**No 3D model is shown until a controller connects.** On the first sensor message, the game reads the `device` field (`"phone"` or `"watch"`) and dynamically spawns the corresponding model (iPhone 17 Pro or Apple Watch Ultra 2). When the device disconnects, the model is removed and the game returns to the waiting state.
+- **UDP Server** (port `9081`): Binary protocol for 5-12ms latency
+- **WebSocket Server** (port `9080`): JSON fallback for reliability
+- **Discovery Beacon** (port `9079`): UDP broadcast for auto-discovery
+
+**No 3D model is shown until a controller connects.** On the first sensor message, the game spawns the iPhone 17 Pro model. When the device disconnects, the model is removed and the game returns to the waiting state.
 
 ### Key scripts
 
 | Script | Role |
 |---|---|
 | `websocket_server.gd` | TCP listener on port 9080 with WebSocket handshake via `WebSocketPeer` |
-| `main.gd` | Orchestrator. Spawns/destroys device models, routes sensor messages |
+| `udp_server.gd` | UDP listener on port 9081 with binary protocol decoder |
+| `discovery_beacon.gd` | UDP broadcast beacon for auto-discovery on port 9079 |
+| `main.gd` | Orchestrator. Spawns device model, routes sensor messages from both transports |
 | `device_controller.gd` | Converts incoming sensor data to Godot quaternions, handles calibration and smoothing |
-| `connection_ui.gd` | HUD showing IP address, connection status, and device type |
+| `connection_ui.gd` | HUD showing IP address, connection status, and transport info |
 
 ### Running
 
-Open the project in Godot 4.6 and press F5. The game displays its LAN IP address and waits for a WebSocket connection.
+Open the project in Godot 4.6 and press F5. The game displays its LAN IP address and starts both UDP and WebSocket servers. The discovery beacon automatically broadcasts the server presence for phone auto-discovery.
 
 ---
 
 ## we-squash-companion
 
-Expo React Native app that serves as both the iPhone controller and the iOS companion app for the Apple Watch. The watchOS target is embedded inside the Expo project using [`@bacons/apple-targets`](https://github.com/EvanBacon/expo-apple-targets).
+Expo React Native app that serves as the iPhone motion controller. Captures device motion via `expo-sensors` and streams it over UDP with automatic fallback to WebSocket.
 
-### iPhone controller
+### Transport Selection
 
-Captures device motion via `expo-sensors` and streams it over WebSocket.
+The app automatically discovers the game server via UDP broadcast and connects via UDP by default. If UDP fails or drops, it seamlessly switches to WebSocket while attempting to reconnect UDP in the background.
 
-### Apple Watch controller
+| Feature | Implementation |
+|---------|---------------|
+| Auto-discovery | Listens for UDP broadcasts on port `9079` |
+| Primary transport | UDP sockets via `react-native-udp` |
+| Fallback transport | WebSocket via native `WebSocket` |
+| Binary protocol | `buffer` package for little-endian encoding |
+| Heartbeat | Every 5s to maintain connection |
 
-SwiftUI watchOS app (watchOS 26+) living in `targets/watch/`. Captures device motion via CoreMotion and streams it over WebSocket.
-
-Uses an `HKWorkoutSession` to keep sensors alive when the screen dims. The WebSocket connection is handled by `URLSessionWebSocketTask`, which works reliably when the paired iPhone is nearby (watchOS routes traffic through the iPhone's network stack via Bluetooth companion proxy).
+### Key files
 
 | File | Role |
 |---|---|
-| `WeSquashWatchApp.swift` | SwiftUI app entry point |
-| `ContentView.swift` | Connection UI with IP/port input and status |
-| `SensorManager.swift` | CoreMotion capture at 50Hz, JSON payload formatting |
-| `WebSocketClient.swift` | `URLSessionWebSocketTask` wrapper with auto-reconnect |
-| `WorkoutManager.swift` | `HKWorkoutSession` for background sensor access |
+| `hooks/useUDPSocket.ts` | UDP socket management with heartbeat and reconnection |
+| `hooks/useDiscovery.ts` | UDP broadcast discovery listener |
+| `hooks/useSensorStream.ts` | Dual-transport orchestration (UDP primary, WS fallback) |
+| `hooks/useWebSocket.ts` | WebSocket client for fallback transport |
+| `utils/binaryProtocol.ts` | Binary encoder for sensor packets and heartbeat |
+| `components/ConnectionPanel.tsx` | Connection UI with transport status |
+| `app/index.tsx` | Main screen with discovery and connection handling |
 
 ### Running
 
@@ -69,24 +91,71 @@ npx expo prebuild -p ios --clean
 npx expo run:ios
 ```
 
-Enter the IP address shown by the game and tap Connect.
+The app will automatically discover the game server on your local network. If discovery fails, you can manually enter the IP address shown by the game.
 
-To build the watch app, open the generated Xcode project and select the `watch` target:
+---
 
-```bash
-cd we-squash-companion
-open ios/wesquashcompanion.xcodeproj
+## Binary Protocol Specification
+
+The UDP transport uses a compact binary protocol for minimal latency.
+
+### Sensor Packet (46 bytes, little-endian)
+
+```
+Offset  Type    Field           Description
+0       u8      packet_type     0x01 = sensor
+1       u8      device_type     0x01 = phone
+2-5     f32     ra              Euler alpha (radians) - yaw
+6-9     f32     rb              Euler beta (radians) - pitch
+10-13   f32     rg              Euler gamma (radians) - roll
+14-17   f32     ga              Gyro alpha (deg/s)
+18-21   f32     gb              Gyro beta (deg/s)
+22-25   f32     gg              Gyro gamma (deg/s)
+26-29   f32     ax              Accel X (m/s²)
+30-33   f32     ay              Accel Y (m/s²)
+34-37   f32     az              Accel Z (m/s²)
+38-45   f64     timestamp       Unix timestamp (ms)
 ```
 
-Build to your Apple Watch from Xcode (requires Developer Mode enabled on the watch: Settings > Privacy & Security > Developer Mode). Enter the game's IP address and tap Connect.
+### Heartbeat Packet (9 bytes)
 
-After modifying Swift files in `targets/watch/`, changes are picked up automatically by Xcode. Only re-run `npx expo prebuild -p ios --clean` if you change `app.json` or `expo-target.config.js`.
+```
+Offset  Type    Field           Description
+0       u8      packet_type     0x02 = heartbeat
+1-8     f64     timestamp       Unix timestamp (ms)
+```
+
+### Heartbeat Response (9 bytes, server→phone)
+
+```
+Offset  Type    Field           Description
+0       u8      packet_type     0x03 = heartbeat response
+1-8     f64     timestamp       Echoed from client for RTT calculation
+```
+
+### Discovery Beacon (text, server→broadcast)
+
+```
+Format: "WESQUASH|{udp_port}|{version}"
+Example: "WESQUASH|9081|1"
+
+Broadcast to: 255.255.255.255:9079
+Interval: Every 2 seconds
+```
+
+### Ports
+
+| Port | Protocol | Purpose |
+|------|----------|---------|
+| 9079 | UDP | Discovery beacon (broadcast) |
+| 9080 | WebSocket | Fallback transport (JSON) |
+| 9081 | UDP | Primary transport (binary) |
 
 ---
 
 ## Orientation mapping
 
-The core challenge is converting sensor orientation data from a phone or watch into a rotation that Godot can apply to a 3D model. Each platform reports orientation differently, and the coordinate systems don't match.
+The core challenge is converting sensor orientation data from the phone into a rotation that Godot can apply to a 3D model.
 
 ### Coordinate systems
 
@@ -98,16 +167,9 @@ X = right of screen                  X = right
 Y = top of screen                    Y = up
 Z = out of screen (toward user)      Z = toward viewer (out of screen)
 Right-handed                         Right-handed, Y-up
-
-CoreMotion (Apple Watch)
-────────────────────────
-X = arbitrary horizontal
-Y = perpendicular horizontal
-Z = vertical (up toward sky)
-Right-handed, Z-up
 ```
 
-### Phone: W3C Euler angles to Godot quaternion
+### W3C Euler angles to Godot quaternion
 
 The iPhone companion app uses Expo's `DeviceMotion` API, which reports orientation as three Euler angles following the W3C DeviceOrientation spec:
 
@@ -139,25 +201,6 @@ static func w3c_to_godot_quat(alpha: float, beta: float, gamma: float) -> Quater
 - Multiplying `Basis` objects composes rotations in the correct order (right-to-left: gamma is applied first, then beta, then alpha).
 - `Basis.get_rotation_quaternion()` extracts the equivalent unit quaternion from the composed rotation matrix, avoiding Euler angle ambiguities and gimbal lock.
 
-### Watch: CoreMotion quaternion to Godot quaternion
-
-The Apple Watch sends the `CMAttitude.quaternion` directly, which avoids Euler decomposition entirely. CoreMotion uses a Z-up reference frame (`xArbitraryCorrectedZVertical`), so a coordinate transform is needed.
-
-The mapping from CoreMotion (Z-up) to Godot (Y-up) swaps the Y and Z axes:
-
-```
-CoreMotion (x, y, z) --> Godot (x, z, -y)
-```
-
-For a quaternion's imaginary part (which is an axis vector), the same transform applies:
-
-```gdscript
-static func cm_quat_to_godot_quat(qx: float, qy: float, qz: float, qw: float) -> Quaternion:
-    return Quaternion(qx, qz, -qy, qw).normalized()
-```
-
-**Why the watch sends quaternions directly:** Expo's DeviceMotion API only exposes Euler angles (alpha/beta/gamma), and the phone is typically held at beta ~= 90 degrees (upright), which is exactly the gimbal lock position for the W3C Euler decomposition. The watch has direct access to CoreMotion's `CMQuaternion`, which has no gimbal lock. Sending the raw quaternion preserves full rotational precision.
-
 ### Calibration
 
 When a device connects, the game runs a 3-second calibration phase. During calibration, quaternion samples are collected and averaged using iterative slerp (with hemisphere correction to handle the q/-q ambiguity). The resulting baseline quaternion represents the device's rest pose.
@@ -185,115 +228,30 @@ quaternion = quaternion.slerp(_target_quat, blend)
 
 ---
 
-## Communication protocol
+## Communication Protocol Comparison
 
-Both devices connect to the game via WebSocket at `ws://<game-ip>:9080` and exchange JSON text frames. The protocol is identical in structure, but the data sources and contents differ.
+| Feature | UDP (Primary) | WebSocket (Fallback) |
+|---------|---------------|---------------------|
+| **Latency** | 5-12ms | 15-30ms |
+| **Protocol** | Binary (46 bytes) | JSON text |
+| **Port** | 9081 | 9080 |
+| **Discovery** | Auto via broadcast | Manual IP entry |
+| **Reliability** | Fire-and-forget | Guaranteed delivery |
+| **Use case** | Gameplay | Fallback/reconnection |
 
-### Shared protocol
+---
 
-On connection, the game sends a welcome message:
+## Dependencies
 
-```json
-{"type": "welcome", "message": "Connected to WeSquash!"}
-```
+### we-squash-companion
 
-The device then streams sensor data at 50-60Hz:
+- `expo-sensors` — DeviceMotion API for sensor data
+- `react-native-udp` — UDP socket implementation
+- `buffer` — Binary encoding/decoding
+- `react-native-reanimated` — UI animations
+- `expo-haptics` — Haptic feedback
 
-```json
-{"type": "sensor", "device": "phone|watch", ...sensor fields..., "ts": 1234567890123}
-```
+### we-squash-game
 
-The `device` field determines which 3D model to spawn and which orientation conversion to use.
-
-### Phone payload
-
-```json
-{
-  "type": "sensor",
-  "device": "phone",
-  "ra": 1.2345, "rb": 0.5678, "rg": -0.1234,
-  "ga": 12.3, "gb": -4.5, "gg": 8.7,
-  "ax": 0.12, "ay": -0.34, "az": 0.56,
-  "ts": 1707868800000
-}
-```
-
-| Field | Source | Unit | Description |
-|---|---|---|---|
-| `ra` | `DeviceMotion.rotation.alpha` | radians | Yaw (rotation around Z) |
-| `rb` | `DeviceMotion.rotation.beta` | radians | Pitch (rotation around X) |
-| `rg` | `DeviceMotion.rotation.gamma` | radians | Roll (rotation around Y) |
-| `ga` | `DeviceMotion.rotationRate.alpha` | deg/s | Gyroscope Z-axis rate |
-| `gb` | `DeviceMotion.rotationRate.beta` | deg/s | Gyroscope Y-axis rate |
-| `gg` | `DeviceMotion.rotationRate.gamma` | deg/s | Gyroscope X-axis rate |
-| `ax` | `DeviceMotion.acceleration.x` | m/s^2 | User acceleration X |
-| `ay` | `DeviceMotion.acceleration.y` | m/s^2 | User acceleration Y |
-| `az` | `DeviceMotion.acceleration.z` | m/s^2 | User acceleration Z |
-
-**Data pipeline:** Expo `DeviceMotion.addListener()` fires at 60Hz. Under the hood, Expo iOS maps `CMAttitude.yaw/pitch/roll` to `alpha/beta/gamma` and converts `CMRotationRate` from rad/s to deg/s. The values are rounded to 4 decimal places and sent as JSON over a native `WebSocket` object.
-
-### Watch payload
-
-```json
-{
-  "type": "sensor",
-  "device": "watch",
-  "qx": 0.1234, "qy": -0.5678, "qz": 0.3456, "qw": 0.7890,
-  "ra": 1.2345, "rb": 0.5678, "rg": -0.1234,
-  "ga": 12.3, "gb": -4.5, "gg": 8.7,
-  "ax": 1.18, "ay": -3.34, "az": 5.49,
-  "ts": 1707868800000
-}
-```
-
-| Field | Source | Unit | Description |
-|---|---|---|---|
-| `qx/qy/qz/qw` | `CMAttitude.quaternion` | unitless | Raw orientation quaternion (Z-up frame) |
-| `ra` | `CMAttitude.yaw` | radians | Yaw (around vertical) |
-| `rb` | `CMAttitude.pitch` | radians | Pitch (around lateral) |
-| `rg` | `CMAttitude.roll` | radians | Roll (around longitudinal) |
-| `ga` | `CMRotationRate.z * 180/pi` | deg/s | Gyroscope Z-axis rate |
-| `gb` | `CMRotationRate.y * 180/pi` | deg/s | Gyroscope Y-axis rate |
-| `gg` | `CMRotationRate.x * 180/pi` | deg/s | Gyroscope X-axis rate |
-| `ax` | `CMAcceleration.x * 9.81` | m/s^2 | User acceleration X |
-| `ay` | `CMAcceleration.y * 9.81` | m/s^2 | User acceleration Y |
-| `az` | `CMAcceleration.z * 9.81` | m/s^2 | User acceleration Z |
-
-**Key differences from the phone:**
-
-1. **Quaternion fields (qx/qy/qz/qw):** The watch sends the raw `CMQuaternion` in addition to Euler angles. The game uses the quaternion (via `cm_quat_to_godot_quat`) because it avoids gimbal lock and preserves full precision. The Euler fields are included as a fallback.
-
-2. **Gyroscope conversion:** CoreMotion reports `rotationRate` in rad/s. The watch converts to deg/s (`* 180/pi`) to match the phone's format, since swing detection thresholds are calibrated in deg/s.
-
-3. **Acceleration conversion:** CoreMotion reports `userAcceleration` in G's (1G = 9.81 m/s^2). The watch converts to m/s^2 (`* 9.81`) to match the phone, which uses Expo's already-converted values.
-
-4. **Networking layer:** The phone uses a browser-standard `WebSocket` object. The watch uses `URLSessionWebSocketTask`, which relies on the paired iPhone's Bluetooth companion proxy to reach the LAN. Both connect to the same Godot `WebSocketPeer` server. Since the watch app is embedded as a companion inside the Expo iOS app, the companion proxy is available whenever the iPhone app is installed.
-
-### How the game routes data
-
-```
-sensor message arrives
-        |
-        v
-  device == "watch" && has "qx" field?
-       / \
-     yes   no
-      |     |
-      v     v
-  cm_quat_to_godot_quat(qx,qy,qz,qw)    w3c_to_godot_quat(ra,rb,rg)
-      |     |
-      v     v
-   current_quat (Godot Y-up frame)
-        |
-        v
-  calibration_quat.inverse() * current_quat
-        |
-        v
-     target_quat
-        |
-        v
-  quaternion.slerp(target_quat, blend)
-        |
-        v
-     Node3D.quaternion (rendered)
-```
+- Godot 4.6+
+- No external dependencies (uses built-in UDPServer, WebSocketPeer)
