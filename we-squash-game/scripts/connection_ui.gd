@@ -10,6 +10,7 @@ var _local_ip := ""
 var _ws_port := 0
 var _udp_port := 0
 var _calibrating := false
+var _is_calibrated := false
 var _qr_displayed := false
 
 
@@ -29,20 +30,24 @@ func on_peer_connected(_peer_id: int) -> void:
 func on_peer_disconnected(_peer_id: int) -> void:
 	_peer_count = max(0, _peer_count - 1)
 	_calibrating = false
+	_is_calibrated = false
 	_update_display()
 
 
 func on_device_detected() -> void:
+	_is_calibrated = false
 	_update_display()
 
 
 func on_calibration_started() -> void:
 	_calibrating = true
+	_is_calibrated = false
 	_update_display()
 
 
 func on_calibration_finished() -> void:
 	_calibrating = false
+	_is_calibrated = true
 	_update_display()
 
 
@@ -77,13 +82,19 @@ func _update_display() -> void:
 	if _calibrating:
 		waiting_label.text = "Calibrating..."
 		waiting_label.modulate = Color(1.0, 0.8, 0.2)
-		status_label.text = "Hold your phone upright and still"
+		status_label.text = "Hold right side pose, keep phone side up, and point phone back to Godot camera"
 		status_label.modulate = Color(1.0, 0.8, 0.2)
 	elif _peer_count > 0:
-		waiting_label.text = "iPhone Connected!"
-		waiting_label.modulate = Color(0.3, 1.0, 0.3)
-		status_label.text = "iPhone controller active"
-		status_label.modulate = Color(0.3, 1.0, 0.3)
+		if _is_calibrated:
+			waiting_label.text = "iPhone Calibrated!"
+			waiting_label.modulate = Color(0.3, 1.0, 0.3)
+			status_label.text = "Acceleration + rotation controller active"
+			status_label.modulate = Color(0.3, 1.0, 0.3)
+		else:
+			waiting_label.text = "iPhone Connected!"
+			waiting_label.modulate = Color(1.0, 0.85, 0.2)
+			status_label.text = "Press and hold Calibrate on the companion app"
+			status_label.modulate = Color(1.0, 0.85, 0.2)
 	else:
 		waiting_label.text = "Scan QR code with your iPhone"
 		waiting_label.modulate = Color.WHITE

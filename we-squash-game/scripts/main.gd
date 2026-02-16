@@ -26,6 +26,7 @@ func _ready() -> void:
 	udp_server.peer_connected.connect(_on_peer_connected)
 	udp_server.peer_disconnected.connect(_on_peer_disconnected)
 	udp_server.sensor_data_received.connect(_on_udp_sensor_data_received)
+	udp_server.command_received.connect(_on_udp_command_received)
 
 	# Start WebSocket server
 	var ws_err := ws_server.start_server()
@@ -61,10 +62,11 @@ func _process(_delta: float) -> void:
 func _on_peer_connected(peer_id: int) -> void:
 	_active_peer_id = peer_id
 	connection_ui.on_peer_connected(peer_id)
-	ws_server.send_to(peer_id, JSON.stringify({
-		"type": "welcome",
-		"message": "Connected to WeSquash!"
-	}))
+	if peer_id < 1000:
+		ws_server.send_to(peer_id, JSON.stringify({
+			"type": "welcome",
+			"message": "Connected to WeSquash!"
+		}))
 
 
 func _on_peer_disconnected(peer_id: int) -> void:
@@ -90,12 +92,18 @@ func _on_udp_sensor_data_received(_peer_id: int, data: Dictionary) -> void:
 		_active_controller.apply_sensor_data(data)
 
 
+func _on_udp_command_received(_peer_id: int, command: Dictionary) -> void:
+	var command_type: String = str(command.get("type", ""))
+	if command_type == "calibrate":
+		_request_calibration()
+
+
 func _on_message_received(_peer_id: int, message: String) -> void:
 	var data = JSON.parse_string(message)
 	if data == null or typeof(data) != TYPE_DICTIONARY:
 		return
 
-	var msg_type = data.get("type", "")
+	var msg_type: String = str(data.get("type", ""))
 	if msg_type == "sensor":
 		# Spawn device on first sensor message (always phone now)
 		if not _device_spawned:
@@ -103,10 +111,25 @@ func _on_message_received(_peer_id: int, message: String) -> void:
 
 		if _active_controller:
 			_active_controller.apply_sensor_data(data)
+	elif msg_type == "calibrate":
+		_request_calibration()
+
+
+func _request_calibration() -> void:
+	if not _active_controller:
+		_spawn_device("phone")
+		if not _active_controller:
+			push_warning("[Main] Calibration requested before controller spawn")
+			return
+
+	_active_controller.start_calibration()
+	print("[Main] Calibration requested by companion")
 
 
 func _spawn_device(_device_type: String) -> void:
+	var existing_peer_id := _active_peer_id
 	_remove_device()
+	_active_peer_id = existing_peer_id
 
 	# Create controller node
 	var controller := Node3D.new()
@@ -130,7 +153,6 @@ func _spawn_device(_device_type: String) -> void:
 	_device_spawned = true
 
 	connection_ui.on_device_detected()
-	controller.start_calibration()
 
 	print("[Main] Spawned iPhone controller")
 

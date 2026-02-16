@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { DeviceMotion, type DeviceMotionMeasurement } from 'expo-sensors';
 import { useWebSocket } from './useWebSocket';
 import { useUDPSocket } from './useUDPSocket';
-import { encodeSensorPacket } from '@/utils/binaryProtocol';
+import { encodeCalibrationPacket, encodeSensorPacket } from '@/utils/binaryProtocol';
 
 interface Vec3 {
   x: number;
@@ -39,6 +39,7 @@ interface UseSensorStreamReturn {
   isConnected: boolean;
   connect: (wsUrl?: string) => void;
   disconnect: () => void;
+  requestCalibration: () => boolean;
   packetsSent: number;
   connectionState: ConnectionState;
   latency: number | undefined;
@@ -66,6 +67,12 @@ interface SensorPayload {
   ax: number;
   ay: number;
   az: number;
+  ts: number;
+}
+
+interface CalibrationPayload {
+  type: 'calibrate';
+  device: 'phone';
   ts: number;
 }
 
@@ -237,6 +244,26 @@ export function useSensorStream({
     }
   }, [transportMode, udpSend, wsSend]);
 
+  const requestCalibration = useCallback((): boolean => {
+    if (!isConnected) {
+      return false;
+    }
+
+    const now = Date.now();
+
+    if (transportMode === 'udp') {
+      const commandPacket = encodeCalibrationPacket(now);
+      return udpSend(commandPacket);
+    }
+
+    const payload: CalibrationPayload = {
+      type: 'calibrate',
+      device: 'phone',
+      ts: now,
+    };
+    return wsSend(JSON.stringify(payload));
+  }, [isConnected, transportMode, udpSend, wsSend]);
+
   const flushPendingPayload = useCallback(() => {
     const payload = pendingPayloadRef.current;
     if (!payload) {
@@ -367,6 +394,7 @@ export function useSensorStream({
     isConnected,
     connect,
     disconnect,
+    requestCalibration,
     packetsSent,
     connectionState,
     latency,

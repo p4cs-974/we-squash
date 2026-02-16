@@ -5,6 +5,7 @@
 [ext_resource type="Script" uid="uid://djd5tek5mh2mo" path="res://scripts/connection_ui.gd" id="3"]
 [ext_resource type="Script" uid="uid://dttyoo0v67rlo" path="res://scripts/udp_server.gd" id="4"]
 [ext_resource type="Script" uid="uid://bfnylcnffatbf" path="res://scripts/discovery_beacon.gd" id="5"]
+[ext_resource type="PackedScene" path="res://scenes/squash_court.tscn" id="6"]
 
 [sub_resource type="Environment" id="Environment_1"]
 background_mode = 1
@@ -92,9 +93,12 @@ size_flags_stretch_ratio = 3.0
 
 [node name="World" type="Node3D" parent="." unique_id=903694613]
 
+[node name="SquashCourt" parent="World" unique_id=2062918198 instance=ExtResource("6")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.65109396, -1.0506363, -0.0436368)
+
 [node name="Camera3D" type="Camera3D" parent="World" unique_id=1414350435]
-transform = Transform3D(1, 0, 0, 0, 0.965926, 0.258819, 0, -0.258819, 0.965926, 0, 0.25, 1.2)
-fov = 45.0
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 3.8)
+fov = 60.0
 
 [node name="DirectionalLight3D" type="DirectionalLight3D" parent="World" unique_id=456134707]
 transform = Transform3D(0.866025, -0.25, 0.433013, 0, 0.866025, 0.5, -0.5, -0.433013, 0.75, 2, 3, 1)

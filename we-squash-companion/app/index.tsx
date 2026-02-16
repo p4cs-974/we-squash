@@ -40,6 +40,7 @@ export default function Index() {
     isConnected,
     connect,
     disconnect,
+    requestCalibration,
     packetsSent,
     connectionState,
     latency,
@@ -78,6 +79,10 @@ export default function Index() {
     setIsQRScannerVisible(false);
   }, []);
 
+  const handleRequestCalibration = useCallback(() => {
+    return requestCalibration();
+  }, [requestCalibration]);
+
   const backgroundColor = Colors[colorScheme ?? 'light'].background;
 
   return (
@@ -111,6 +116,7 @@ export default function Index() {
           onTransportModeChange={handleTransportModeChange}
           discoveredServer={discoveredServer}
           onScanQRCode={handleOpenQRScanner}
+          onRequestCalibration={handleRequestCalibration}
         />
       </ScrollView>
       <QRScanner

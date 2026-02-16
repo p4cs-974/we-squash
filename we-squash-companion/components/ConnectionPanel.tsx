@@ -1,5 +1,6 @@
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Pressable,
   StyleSheet,
   TextInput,
   TouchableOpacity,
@@ -30,6 +31,7 @@ export interface DiscoveredServer {
 
 const FALLBACK_EULER = { alpha: 0, beta: 0, gamma: 0 };
 const FALLBACK_VEC3 = { x: 0, y: 0, z: 0 };
+const CALIBRATION_HOLD_DURATION_MS = 3000;
 
 interface ConnectionPanelProps {
   ipAddress: string;
@@ -47,6 +49,7 @@ interface ConnectionPanelProps {
   onTransportModeChange: (mode: TransportMode) => void;
   discoveredServer: DiscoveredServer | null;
   onScanQRCode?: () => void;
+  onRequestCalibration?: () => boolean | Promise<boolean>;
 }
 
 export function ConnectionPanel({
@@ -65,9 +68,20 @@ export function ConnectionPanel({
   onTransportModeChange,
   discoveredServer,
   onScanQRCode,
+  onRequestCalibration,
 }: ConnectionPanelProps) {
   const colorScheme = useColorScheme();
   const isDark = colorScheme === 'dark';
+  const [calibrationProgress, setCalibrationProgress] = useState(0);
+  const [isCalibrationHolding, setIsCalibrationHolding] = useState(false);
+  const [isCalibrationSubmitting, setIsCalibrationSubmitting] = useState(false);
+
+  const holdStartedAtRef = useRef(0);
+  const holdTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdAnimationFrameRef = useRef<number | null>(null);
+  const holdHapticTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const holdActiveRef = useRef(false);
+  const holdCompletedRef = useRef(false);
 
   const handleToggleConnection = useCallback(() => {
     if (Platform.OS === 'ios') {
@@ -162,6 +176,163 @@ export function ConnectionPanel({
     }
     onScanQRCode?.();
   }, [onScanQRCode]);
+
+  const clearCalibrationTimers = useCallback(() => {
+    if (holdTimeoutRef.current) {
+      clearTimeout(holdTimeoutRef.current);
+      holdTimeoutRef.current = null;
+    }
+    if (holdHapticTimeoutRef.current) {
+      clearTimeout(holdHapticTimeoutRef.current);
+      holdHapticTimeoutRef.current = null;
+    }
+    if (holdAnimationFrameRef.current !== null) {
+      cancelAnimationFrame(holdAnimationFrameRef.current);
+      holdAnimationFrameRef.current = null;
+    }
+  }, []);
+
+  const tickCalibrationProgress = () => {
+    if (!holdActiveRef.current) {
+      return;
+    }
+
+    const elapsed = Date.now() - holdStartedAtRef.current;
+    const progress = Math.min(1, elapsed / CALIBRATION_HOLD_DURATION_MS);
+    setCalibrationProgress(progress);
+
+    if (progress < 1) {
+      holdAnimationFrameRef.current = requestAnimationFrame(tickCalibrationProgress);
+    }
+  };
+
+  const runCalibrationHaptics = () => {
+    if (Platform.OS !== 'ios' || !holdActiveRef.current) {
+      return;
+    }
+
+    const elapsed = Date.now() - holdStartedAtRef.current;
+    const progress = Math.min(1, elapsed / CALIBRATION_HOLD_DURATION_MS);
+
+    let style = Haptics.ImpactFeedbackStyle.Soft;
+    if (progress > 0.8) {
+      style = Haptics.ImpactFeedbackStyle.Heavy;
+    } else if (progress > 0.55) {
+      style = Haptics.ImpactFeedbackStyle.Medium;
+    } else if (progress > 0.3) {
+      style = Haptics.ImpactFeedbackStyle.Light;
+    }
+
+    void Haptics.impactAsync(style);
+
+    const eased = 1 - Math.pow(1 - progress, 2.2);
+    const nextInterval = Math.max(55, Math.round(360 - 300 * eased));
+    holdHapticTimeoutRef.current = setTimeout(() => {
+      runCalibrationHaptics();
+    }, nextInterval);
+  };
+
+  const completeCalibrationHold = useCallback(async () => {
+    if (holdCompletedRef.current) {
+      return;
+    }
+
+    holdCompletedRef.current = true;
+    holdActiveRef.current = false;
+    clearCalibrationTimers();
+    setIsCalibrationHolding(false);
+    setCalibrationProgress(1);
+    setIsCalibrationSubmitting(true);
+
+    const success = onRequestCalibration ? await Promise.resolve(onRequestCalibration()) : false;
+
+    setIsCalibrationSubmitting(false);
+    if (Platform.OS === 'ios') {
+      void Haptics.notificationAsync(
+        success
+          ? Haptics.NotificationFeedbackType.Success
+          : Haptics.NotificationFeedbackType.Error,
+      );
+    }
+
+    if (success) {
+      setTimeout(() => {
+        setCalibrationProgress(0);
+      }, 500);
+    } else {
+      setCalibrationProgress(0);
+    }
+  }, [clearCalibrationTimers, onRequestCalibration]);
+
+  const handleCalibrationPressIn = () => {
+    if (!isConnected || !onRequestCalibration || isCalibrationSubmitting) {
+      return;
+    }
+
+    holdCompletedRef.current = false;
+    holdActiveRef.current = true;
+    holdStartedAtRef.current = Date.now();
+    setCalibrationProgress(0);
+    setIsCalibrationHolding(true);
+
+    if (Platform.OS === 'ios') {
+      void Haptics.selectionAsync();
+    }
+
+    tickCalibrationProgress();
+    runCalibrationHaptics();
+
+    holdTimeoutRef.current = setTimeout(() => {
+      void completeCalibrationHold();
+    }, CALIBRATION_HOLD_DURATION_MS);
+  };
+
+  const handleCalibrationPressOut = () => {
+    if (!holdActiveRef.current) {
+      return;
+    }
+
+    holdActiveRef.current = false;
+    clearCalibrationTimers();
+    setIsCalibrationHolding(false);
+
+    if (!holdCompletedRef.current) {
+      setCalibrationProgress(0);
+      if (Platform.OS === 'ios') {
+        void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Soft);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (!isConnected) {
+      holdActiveRef.current = false;
+      holdCompletedRef.current = false;
+      clearCalibrationTimers();
+      setCalibrationProgress(0);
+      setIsCalibrationHolding(false);
+      setIsCalibrationSubmitting(false);
+    }
+  }, [clearCalibrationTimers, isConnected]);
+
+  useEffect(() => {
+    return () => {
+      clearCalibrationTimers();
+    };
+  }, [clearCalibrationTimers]);
+
+  const calibrationProgressPercent = Math.round(calibrationProgress * 100);
+  const canRequestCalibration = isConnected && Boolean(onRequestCalibration) && !isCalibrationSubmitting;
+  const calibrationButtonText = isCalibrationSubmitting
+    ? 'Starting calibration...'
+    : isCalibrationHolding
+      ? 'Keep holding...'
+      : 'Hold to Calibrate (3s)';
+  const calibrationStatusText = isCalibrationSubmitting
+    ? 'Calibration requested on game.'
+    : isCalibrationHolding
+      ? 'Hold steady. Haptics speed up as the timer completes.'
+      : 'Press and hold for 3 seconds.';
 
   return (
     <Animated.View entering={FadeInUp.duration(400)} style={styles.container}>
@@ -342,6 +513,56 @@ export function ConnectionPanel({
               isDark={isDark}
             />
           </View>
+        </Animated.View>
+      )}
+
+      {isConnected && onRequestCalibration && (
+        <Animated.View
+          entering={FadeIn.duration(300)}
+          style={[styles.card, { backgroundColor, borderColor }]}
+        >
+          <ThemedText style={[styles.cardTitle, { color: textColor }]}>
+            Calibration
+          </ThemedText>
+          <ThemedText style={[styles.calibrationHint, { color: secondaryTextColor }]}>
+            Hold your arms fully extended to the right, keep the phone side pointing up,
+            and point the back of the phone toward the Godot camera.
+          </ThemedText>
+
+          <Pressable
+            style={({ pressed }) => [
+              styles.calibrationButton,
+              {
+                backgroundColor: secondaryBackground,
+                borderColor,
+                opacity: canRequestCalibration ? 1 : 0.65,
+              },
+              pressed && canRequestCalibration && styles.calibrationButtonPressed,
+            ]}
+            onPressIn={handleCalibrationPressIn}
+            onPressOut={handleCalibrationPressOut}
+            onTouchCancel={handleCalibrationPressOut}
+            disabled={!canRequestCalibration}
+          >
+            <View style={styles.calibrationProgressTrack}>
+              <View
+                style={[
+                  styles.calibrationProgressFill,
+                  { width: `${calibrationProgressPercent}%` },
+                ]}
+              />
+            </View>
+            <ThemedText style={[styles.calibrationButtonText, { color: textColor }]}>
+              {calibrationButtonText}
+            </ThemedText>
+            <ThemedText style={[styles.calibrationProgressText, { color: secondaryTextColor }]}>
+              {calibrationProgressPercent}%
+            </ThemedText>
+          </Pressable>
+
+          <ThemedText style={[styles.calibrationStatus, { color: secondaryTextColor }]}>
+            {calibrationStatusText}
+          </ThemedText>
         </Animated.View>
       )}
 
@@ -556,6 +777,42 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 17,
     fontWeight: '600',
+  },
+  calibrationHint: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  calibrationButton: {
+    borderWidth: 1,
+    borderRadius: 12,
+    padding: 12,
+    gap: 8,
+  },
+  calibrationButtonPressed: {
+    transform: [{ scale: 0.99 }],
+  },
+  calibrationProgressTrack: {
+    height: 8,
+    borderRadius: 999,
+    backgroundColor: 'rgba(10, 132, 255, 0.2)',
+    overflow: 'hidden',
+  },
+  calibrationProgressFill: {
+    height: '100%',
+    borderRadius: 999,
+    backgroundColor: '#0A84FF',
+  },
+  calibrationButtonText: {
+    fontSize: 17,
+    fontWeight: '600',
+  },
+  calibrationProgressText: {
+    fontSize: 13,
+    fontVariant: ['tabular-nums'],
+  },
+  calibrationStatus: {
+    fontSize: 13,
+    lineHeight: 18,
   },
   statsGrid: {
     flexDirection: 'row',

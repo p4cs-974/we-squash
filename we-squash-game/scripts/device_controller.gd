@@ -7,9 +7,22 @@ signal swing_detected(power: float)
 @export_range(1.0, 60.0) var smoothing_speed: float = 12.0
 @export var calibration_duration: float = 3.0
 @export var swing_threshold_dps: float = 400.0
+@export_range(0.1, 40.0) var accel_translation_gain: float = 6.8
+@export_range(0.0, 2.0) var accel_deadzone: float = 0.18
+@export_range(0.1, 30.0) var accel_filter_speed: float = 18.0
+@export_range(0.1, 4.0) var accel_response_curve: float = 1.35
+@export_range(0.1, 20.0) var max_linear_speed: float = 2.2
+@export_range(0.1, 30.0) var translation_damping: float = 14.0
+@export_range(0.1, 20.0) var translation_recenter_speed: float = 6.5
+@export var max_position_offset := Vector3(0.42, 0.3, 0.48)
+@export_range(-180.0, 180.0) var anchor_yaw_deg: float = 180.0
+@export_range(-180.0, 180.0) var anchor_pitch_deg: float = 0.0
+@export_range(-180.0, 180.0) var anchor_roll_deg: float = 90.0
 
 # --- Quaternion-based state ---
 var _target_quat := Quaternion.IDENTITY
+var _relative_quat := Quaternion.IDENTITY
+var _anchor_quat := Quaternion.IDENTITY
 var _has_data := false
 var _last_sensor_timestamp := 0
 
@@ -17,6 +30,9 @@ var _last_sensor_timestamp := 0
 var _gyro_rate := Vector3.ZERO       # deg/s in device frame
 var _user_accel := Vector3.ZERO      # m/s^2 in device frame
 var _swing_cooldown := 0.0
+var _filtered_accel := Vector3.ZERO
+var _linear_velocity := Vector3.ZERO
+var _position_offset := Vector3.ZERO
 
 # Calibration state
 var _calibrating := false
@@ -50,7 +66,12 @@ static func w3c_to_godot_quat(alpha: float, beta: float, gamma: float) -> Quater
 	return combined.get_rotation_quaternion().normalized()
 
 
+func _ready() -> void:
+	_rebuild_anchor_quat()
+
+
 func start_calibration() -> void:
+	_rebuild_anchor_quat()
 	_calibrating = true
 	_calibration_timer = 0.0
 	_calibration_samples.clear()
@@ -58,10 +79,15 @@ func start_calibration() -> void:
 	_is_calibrated = false
 	_has_data = false
 	_last_sensor_timestamp = 0
-	_target_quat = Quaternion.IDENTITY
-	quaternion = Quaternion.IDENTITY
+	_target_quat = _anchor_quat
+	_relative_quat = Quaternion.IDENTITY
+	quaternion = _anchor_quat
+	_filtered_accel = Vector3.ZERO
+	_linear_velocity = Vector3.ZERO
+	_position_offset = Vector3.ZERO
+	position = Vector3.ZERO
 	calibration_started.emit()
-	print("[Controller] Calibration started -- hold phone upright for %.0fs" % calibration_duration)
+	print("[Controller] Calibration started -- hold pose for %.0fs" % calibration_duration)
 
 
 func apply_sensor_data(data: Dictionary) -> void:
@@ -99,7 +125,8 @@ func apply_sensor_data(data: Dictionary) -> void:
 	_has_data = true
 
 	# Relative rotation: undo calibration pose, apply current pose.
-	_target_quat = _calibration_quat.inverse() * current_quat
+	_relative_quat = (_calibration_quat.inverse() * current_quat).normalized()
+	_target_quat = (_anchor_quat * _relative_quat).normalized()
 
 
 func _process(delta: float) -> void:
@@ -114,12 +141,15 @@ func _process(delta: float) -> void:
 		var t := Time.get_ticks_msec() / 1000.0
 		rotation.y = sin(t * 0.5) * 0.1
 		rotation.x = cos(t * 0.3) * 0.05
+		_position_offset = _position_offset.lerp(Vector3.ZERO, 1.0 - exp(-translation_recenter_speed * delta))
+		position = _position_offset
 		return
 
 	# Frame-rate-independent exponential smoothing via slerp.
 	# smoothing_speed controls convergence rate (~1/s). Higher = snappier.
 	var blend := 1.0 - exp(-smoothing_speed * delta)
 	quaternion = quaternion.slerp(_target_quat, blend)
+	_update_translation(delta)
 
 	# Swing detection via gyroscope magnitude (deg/s)
 	_swing_cooldown = maxf(0.0, _swing_cooldown - delta)
@@ -144,7 +174,71 @@ func _finish_calibration() -> void:
 
 	_is_calibrated = true
 	_calibration_samples.clear()
+	_filtered_accel = Vector3.ZERO
+	_linear_velocity = Vector3.ZERO
+	_position_offset = Vector3.ZERO
+	position = Vector3.ZERO
 	calibration_finished.emit()
+
+
+func _update_translation(delta: float) -> void:
+	var accel_input := _apply_deadzone(_user_accel, accel_deadzone)
+	accel_input = _shape_accel(accel_input, accel_response_curve)
+	var accel_blend := 1.0 - exp(-accel_filter_speed * delta)
+	_filtered_accel = _filtered_accel.lerp(accel_input, accel_blend)
+
+	# Acceleration is reported in device-local coordinates; rotate into world space
+	# so translational movement follows phone orientation.
+	var accel_world := _relative_quat * _filtered_accel
+	accel_world.z = -accel_world.z
+
+	_linear_velocity += accel_world * accel_translation_gain * delta
+	if _linear_velocity.length() > max_linear_speed:
+		_linear_velocity = _linear_velocity.normalized() * max_linear_speed
+
+	var damping_blend := 1.0 - exp(-translation_damping * delta)
+	_linear_velocity = _linear_velocity.lerp(Vector3.ZERO, damping_blend)
+	_position_offset += _linear_velocity * delta
+
+	_position_offset.x = clampf(_position_offset.x, -max_position_offset.x, max_position_offset.x)
+	_position_offset.y = clampf(_position_offset.y, -max_position_offset.y, max_position_offset.y)
+	_position_offset.z = clampf(_position_offset.z, -max_position_offset.z, max_position_offset.z)
+
+	var recenter_blend := 1.0 - exp(-translation_recenter_speed * delta)
+	_position_offset = _position_offset.lerp(Vector3.ZERO, recenter_blend)
+	position = _position_offset
+
+
+func _rebuild_anchor_quat() -> void:
+	var yaw := Quaternion(Vector3.UP, deg_to_rad(anchor_yaw_deg))
+	var pitch := Quaternion(Vector3.RIGHT, deg_to_rad(anchor_pitch_deg))
+	var roll := Quaternion(Vector3.BACK, deg_to_rad(anchor_roll_deg))
+	_anchor_quat = (yaw * pitch * roll).normalized()
+
+
+static func _apply_deadzone(value: Vector3, deadzone: float) -> Vector3:
+	var output := value
+	if absf(output.x) < deadzone:
+		output.x = 0.0
+	if absf(output.y) < deadzone:
+		output.y = 0.0
+	if absf(output.z) < deadzone:
+		output.z = 0.0
+	return output
+
+
+static func _shape_accel(value: Vector3, curve: float) -> Vector3:
+	return Vector3(
+		_signed_pow(value.x, curve),
+		_signed_pow(value.y, curve),
+		_signed_pow(value.z, curve)
+	)
+
+
+static func _signed_pow(value: float, p: float) -> float:
+	if is_zero_approx(value):
+		return 0.0
+	return signf(value) * pow(absf(value), p)
 
 
 ## Iterative slerp averaging of quaternions.

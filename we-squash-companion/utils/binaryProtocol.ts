@@ -4,14 +4,20 @@ export const PACKET_TYPE = {
   SENSOR: 0x01,
   HEARTBEAT: 0x02,
   HEARTBEAT_RESPONSE: 0x03,
+  COMMAND: 0x04,
 } as const;
 
 export const DEVICE_TYPE = {
   PHONE: 0x01,
 } as const;
 
+export const COMMAND_TYPE = {
+  CALIBRATE: 0x01,
+} as const;
+
 export const SENSOR_PACKET_SIZE = 46;
 export const HEARTBEAT_PACKET_SIZE = 9;
+export const COMMAND_PACKET_SIZE = 10;
 
 export interface SensorPacketData {
   ra: number;
@@ -69,6 +75,21 @@ export function encodeHeartbeatPacket(timestamp: number): Buffer {
   const buf = Buffer.alloc(HEARTBEAT_PACKET_SIZE);
   buf.writeUInt8(PACKET_TYPE.HEARTBEAT, 0);
   buf.writeDoubleLE(timestamp, 1);
+  return buf;
+}
+
+/**
+ * Encode a calibration command packet (10 bytes).
+ * Format (little-endian):
+ * - Offset 0: u8 packet_type (0x04)
+ * - Offset 1: u8 command_type (0x01 = calibrate)
+ * - Offset 2-9: f64 timestamp (Unix ms)
+ */
+export function encodeCalibrationPacket(timestamp: number): Buffer {
+  const buf = Buffer.alloc(COMMAND_PACKET_SIZE);
+  buf.writeUInt8(PACKET_TYPE.COMMAND, 0);
+  buf.writeUInt8(COMMAND_TYPE.CALIBRATE, 1);
+  buf.writeDoubleLE(timestamp, 2);
   return buf;
 }
 

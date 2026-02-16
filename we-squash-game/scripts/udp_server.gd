@@ -7,6 +7,8 @@ signal peer_connected(peer_id: int)
 signal peer_disconnected(peer_id: int)
 ## Emitted when sensor data is received from a peer (decoded binary).
 signal sensor_data_received(peer_id: int, data: Dictionary)
+## Emitted when a command packet is received from a peer.
+signal command_received(peer_id: int, command: Dictionary)
 
 const PORT := 9081
 const MAX_CONNECTIONS := 10
@@ -17,8 +19,10 @@ const HEARTBEAT_INTERVAL_MS := 5000  # Phone sends heartbeat every 5s
 const PACKET_TYPE_SENSOR := 0x01
 const PACKET_TYPE_HEARTBEAT := 0x02
 const PACKET_TYPE_HEARTBEAT_RESPONSE := 0x03
+const PACKET_TYPE_COMMAND := 0x04
 
 const DEVICE_TYPE_PHONE := 0x01
+const COMMAND_TYPE_CALIBRATE := 0x01
 
 var _udp_server := UDPServer.new()
 var _packet_peer := PacketPeerUDP.new()
@@ -127,6 +131,8 @@ func _process_packet_with_type(packet: PackedByteArray, packet_type: int, addr_k
 			_process_sensor_packet(packet, addr_key, addr, port)
 		PACKET_TYPE_HEARTBEAT:
 			_process_heartbeat_packet(packet, addr_key, addr, port)
+		PACKET_TYPE_COMMAND:
+			_process_command_packet(packet, addr_key, addr, port)
 		_:
 			push_warning("[UDP Server] Unknown packet type: %d from %s" % [packet_type, addr_key])
 
@@ -202,6 +208,36 @@ func _process_heartbeat_packet(packet: PackedByteArray, addr_key: String, addr: 
 
 	# Send heartbeat response
 	_send_heartbeat_response(addr, port, timestamp)
+
+
+func _process_command_packet(packet: PackedByteArray, addr_key: String, addr: String, port: int) -> void:
+	# Command packet format:
+	# - offset 0: u8 packet_type (0x04)
+	# - offset 1: u8 command_type
+	# - offset 2-9: optional f64 timestamp
+	if packet.size() < 2:
+		push_warning("[UDP Server] Invalid command packet size: %d from %s" % [packet.size(), addr_key])
+		return
+
+	var peer_id := _get_or_create_peer(addr_key, addr, port)
+	if peer_id == -1:
+		return
+
+	_peers[peer_id].last_activity = Time.get_ticks_msec()
+
+	var command_type := packet.decode_u8(1)
+	var command_ts := 0
+	if packet.size() >= 10:
+		command_ts = int(packet.decode_double(2))
+
+	match command_type:
+		COMMAND_TYPE_CALIBRATE:
+			command_received.emit(peer_id, {
+				"type": "calibrate",
+				"ts": command_ts
+			})
+		_:
+			push_warning("[UDP Server] Unknown command type: %d from %s" % [command_type, addr_key])
 
 
 func _get_or_create_peer(addr_key: String, addr: String, port: int) -> int:
