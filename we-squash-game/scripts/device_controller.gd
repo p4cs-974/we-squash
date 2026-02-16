@@ -11,6 +11,7 @@ signal swing_detected(power: float)
 # --- Quaternion-based state ---
 var _target_quat := Quaternion.IDENTITY
 var _has_data := false
+var _last_sensor_timestamp := 0
 
 # Gyroscope / accelerometer (device-local frame)
 var _gyro_rate := Vector3.ZERO       # deg/s in device frame
@@ -56,6 +57,7 @@ func start_calibration() -> void:
 	_calibration_quat = Quaternion.IDENTITY
 	_is_calibrated = false
 	_has_data = false
+	_last_sensor_timestamp = 0
 	_target_quat = Quaternion.IDENTITY
 	quaternion = Quaternion.IDENTITY
 	calibration_started.emit()
@@ -65,6 +67,12 @@ func start_calibration() -> void:
 func apply_sensor_data(data: Dictionary) -> void:
 	if not data.has("ra"):
 		return
+
+	var sample_ts := int(data.get("ts", 0))
+	if sample_ts > 0:
+		if sample_ts <= _last_sensor_timestamp:
+			return
+		_last_sensor_timestamp = sample_ts
 
 	# Build orientation quaternion from W3C DeviceOrientation Euler angles (radians)
 	var alpha: float = float(data.get("ra", 0.0))  # yaw   (around Z)

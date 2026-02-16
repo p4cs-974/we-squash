@@ -49,9 +49,12 @@ func _ready() -> void:
 	connection_ui.setup(local_ip, GameWebSocketServer.PORT, GameUDPServer.PORT)
 
 
-func _process(_delta: float) -> void:
+func _physics_process(_delta: float) -> void:
 	ws_server.poll()
 	udp_server.poll()
+
+
+func _process(_delta: float) -> void:
 	discovery_beacon.poll()
 
 

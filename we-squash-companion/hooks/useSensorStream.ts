@@ -27,6 +27,8 @@ const ZERO_VEC3: Vec3 = { x: 0, y: 0, z: 0 };
 const ZERO_SENSOR: SensorData = { rotation: ZERO_EULER, gyro: ZERO_EULER, accel: ZERO_VEC3 };
 
 const DEFAULT_THROTTLE_INTERVAL = 16;
+const SENSOR_UI_UPDATE_INTERVAL_MS = 66;
+const PACKET_COUNTER_UPDATE_INTERVAL_MS = 250;
 
 type ConnectionState = 'idle' | 'connecting' | 'open' | 'closing' | 'closed' | 'error';
 type TransportMode = 'udp' | 'websocket';
@@ -87,8 +89,10 @@ export function useSensorStream({
   const subscriptionRef = useRef<ReturnType<typeof DeviceMotion.addListener> | null>(null);
   const packetsSentRef = useRef(0);
   const lastSentRef = useRef(0);
-  const pendingSendRef = useRef(false);
-  const animationFrameRef = useRef<number | null>(null);
+  const lastSensorUiUpdateRef = useRef(0);
+  const pendingPayloadRef = useRef<SensorPayload | null>(null);
+  const sendTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const packetCounterIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const wsUrlRef = useRef(initialWsUrl);
   const serverIpRef = useRef(serverIp);
   const serverPortRef = useRef(serverPort);
@@ -153,6 +157,10 @@ export function useSensorStream({
   }, [transport]);
 
   useEffect(() => {
+    wsUrlRef.current = initialWsUrl;
+  }, [initialWsUrl]);
+
+  useEffect(() => {
     serverIpRef.current = serverIp;
   }, [serverIp]);
 
@@ -160,11 +168,27 @@ export function useSensorStream({
     serverPortRef.current = serverPort;
   }, [serverPort]);
 
+  const clearSendTimeout = useCallback(() => {
+    if (sendTimeoutRef.current !== null) {
+      clearTimeout(sendTimeoutRef.current);
+      sendTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearPacketCounterInterval = useCallback(() => {
+    if (packetCounterIntervalRef.current !== null) {
+      clearInterval(packetCounterIntervalRef.current);
+      packetCounterIntervalRef.current = null;
+    }
+  }, []);
+
   const connect = useCallback((explicitWsUrl?: string) => {
     console.log('[Sensor] connect() called, transport=', transportMode);
     packetsSentRef.current = 0;
     lastSentRef.current = 0;
-    pendingSendRef.current = false;
+    lastSensorUiUpdateRef.current = 0;
+    pendingPayloadRef.current = null;
+    clearSendTimeout();
     setPacketsSent(0);
 
     if (transportMode === 'udp') {
@@ -181,19 +205,17 @@ export function useSensorStream({
         wsConnect(url);
       }
     }
-  }, [transportMode, udpConnect, wsConnect]);
+  }, [clearSendTimeout, transportMode, udpConnect, wsConnect]);
 
   const disconnect = useCallback(() => {
-    if (animationFrameRef.current !== null) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
+    clearSendTimeout();
+    pendingPayloadRef.current = null;
     if (transportMode === 'udp') {
       udpDisconnect();
     } else {
       wsDisconnect();
     }
-  }, [transportMode, udpDisconnect, wsDisconnect]);
+  }, [clearSendTimeout, transportMode, udpDisconnect, wsDisconnect]);
 
   const send = useCallback((data: SensorPayload): boolean => {
     if (transportMode === 'udp') {
@@ -215,42 +237,54 @@ export function useSensorStream({
     }
   }, [transportMode, udpSend, wsSend]);
 
-  const throttledSend = useCallback((payload: SensorPayload) => {
-    const now = Date.now();
-    
-    if (now - lastSentRef.current >= throttleInterval) {
-      const success = send(payload);
-      if (success) {
-        packetsSentRef.current += 1;
-        setPacketsSent(packetsSentRef.current);
-        lastSentRef.current = now;
-      }
-      pendingSendRef.current = false;
+  const flushPendingPayload = useCallback(() => {
+    const payload = pendingPayloadRef.current;
+    if (!payload) {
       return;
     }
 
-    if (!pendingSendRef.current) {
-      pendingSendRef.current = true;
-      
-      const scheduleSend = () => {
-        const currentTime = Date.now();
-        if (currentTime - lastSentRef.current >= throttleInterval) {
-          const success = send(payload);
-          if (success) {
-            packetsSentRef.current += 1;
-            setPacketsSent(packetsSentRef.current);
-            lastSentRef.current = currentTime;
-          }
-          pendingSendRef.current = false;
-          animationFrameRef.current = null;
-        } else {
-          animationFrameRef.current = requestAnimationFrame(scheduleSend);
-        }
-      };
-      
-      animationFrameRef.current = requestAnimationFrame(scheduleSend);
+    const now = Date.now();
+    const elapsed = now - lastSentRef.current;
+
+    if (elapsed < throttleInterval) {
+      if (sendTimeoutRef.current === null) {
+        sendTimeoutRef.current = setTimeout(() => {
+          sendTimeoutRef.current = null;
+          flushPendingPayload();
+        }, throttleInterval - elapsed);
+      }
+      return;
+    }
+
+    pendingPayloadRef.current = null;
+    const success = send(payload);
+    if (success) {
+      packetsSentRef.current += 1;
+      lastSentRef.current = now;
     }
   }, [send, throttleInterval]);
+
+  const queueLatestPayload = useCallback((payload: SensorPayload) => {
+    pendingPayloadRef.current = payload;
+    flushPendingPayload();
+  }, [flushPendingPayload]);
+
+  useEffect(() => {
+    if (!isConnected) {
+      clearPacketCounterInterval();
+      setPacketsSent(packetsSentRef.current);
+      return;
+    }
+
+    clearPacketCounterInterval();
+    packetCounterIntervalRef.current = setInterval(() => {
+      setPacketsSent(packetsSentRef.current);
+    }, PACKET_COUNTER_UPDATE_INTERVAL_MS);
+
+    return () => {
+      clearPacketCounterInterval();
+    };
+  }, [clearPacketCounterInterval, isConnected]);
 
   useEffect(() => {
     if (subscriptionRef.current) {
@@ -258,10 +292,8 @@ export function useSensorStream({
       subscriptionRef.current = null;
     }
 
-    if (animationFrameRef.current !== null) {
-      cancelAnimationFrame(animationFrameRef.current);
-      animationFrameRef.current = null;
-    }
+    clearSendTimeout();
+    pendingPayloadRef.current = null;
 
     console.log('[Sensor] Streaming effect: isConnected=%s isSensorAvailable=%s transport=%s', isConnected, isSensorAvailable, transportMode);
     
@@ -286,7 +318,11 @@ export function useSensorStream({
           ? { x: round4(accel.x), y: round4(accel.y), z: round4(accel.z) }
           : ZERO_VEC3;
 
-        setSensorData({ rotation, gyro: gyroData, accel: accelData });
+        const now = Date.now();
+        if (now - lastSensorUiUpdateRef.current >= SENSOR_UI_UPDATE_INTERVAL_MS) {
+          setSensorData({ rotation, gyro: gyroData, accel: accelData });
+          lastSensorUiUpdateRef.current = now;
+        }
 
         const payload: SensorPayload = {
           type: 'sensor',
@@ -300,10 +336,10 @@ export function useSensorStream({
           ax: accelData.x,
           ay: accelData.y,
           az: accelData.z,
-          ts: Date.now(),
+          ts: now,
         };
 
-        throttledSend(payload);
+        queueLatestPayload(payload);
       });
     }
 
@@ -312,12 +348,18 @@ export function useSensorStream({
         subscriptionRef.current.remove();
         subscriptionRef.current = null;
       }
-      if (animationFrameRef.current !== null) {
-        cancelAnimationFrame(animationFrameRef.current);
-        animationFrameRef.current = null;
-      }
+      clearSendTimeout();
+      pendingPayloadRef.current = null;
     };
-  }, [isConnected, isSensorAvailable, throttledSend, transportMode]);
+  }, [clearSendTimeout, isConnected, isSensorAvailable, queueLatestPayload, transportMode]);
+
+  useEffect(() => {
+    return () => {
+      clearSendTimeout();
+      clearPacketCounterInterval();
+      pendingPayloadRef.current = null;
+    };
+  }, [clearPacketCounterInterval, clearSendTimeout]);
 
   return {
     sensorData,

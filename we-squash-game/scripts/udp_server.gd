@@ -74,7 +74,9 @@ func poll() -> void:
 	# Check for timeouts
 	_check_timeouts()
 
-	# Process incoming packets
+	# Process incoming packets.
+	# Keep only the newest sensor packet per peer to avoid backlog-induced latency.
+	var latest_sensor_packets: Dictionary = {}
 	while _udp_server.is_connection_available():
 		var conn := _udp_server.take_connection()
 		if conn == null:
@@ -84,7 +86,29 @@ func poll() -> void:
 			var packet := conn.get_packet()
 			var addr := conn.get_packet_ip()
 			var port := conn.get_packet_port()
-			_process_packet(packet, addr, port)
+			if packet.size() < 1:
+				continue
+
+			var packet_type := packet.decode_u8(0)
+			var addr_key := "%s:%d" % [addr, port]
+
+			if packet_type == PACKET_TYPE_SENSOR:
+				latest_sensor_packets[addr_key] = {
+					"packet": packet,
+					"addr": addr,
+					"port": port
+				}
+			else:
+				_process_packet_with_type(packet, packet_type, addr_key, addr, port)
+
+	for addr_key in latest_sensor_packets.keys():
+		var latest_packet = latest_sensor_packets[addr_key]
+		_process_sensor_packet(
+			latest_packet["packet"],
+			addr_key,
+			latest_packet["addr"],
+			latest_packet["port"]
+		)
 
 
 func _process_packet(packet: PackedByteArray, addr: String, port: int) -> void:
@@ -93,6 +117,10 @@ func _process_packet(packet: PackedByteArray, addr: String, port: int) -> void:
 
 	var packet_type := packet.decode_u8(0)
 	var addr_key := "%s:%d" % [addr, port]
+	_process_packet_with_type(packet, packet_type, addr_key, addr, port)
+
+
+func _process_packet_with_type(packet: PackedByteArray, packet_type: int, addr_key: String, addr: String, port: int) -> void:
 
 	match packet_type:
 		PACKET_TYPE_SENSOR:
